@@ -1,0 +1,12 @@
+# DATA RAHASIA — file contoh dan data master berisi NPWP pelanggan.
+# Jangan pernah di-upload ke repo public. Data master hanya boleh ada di repo private.
+contoh/
+data/
+*.pdf
+*.xml
+*.csv
+*.xlsx
+*.xls
+
+node_modules/
+.vscode/*.vsix

@@ -67,6 +67,22 @@ test("invoice dari harga termasuk PPN dihitung seperti template Excel", () => {
   assert.ok(f.checks.some((c) => c.level === "ok" && /DPP, DPP Nilai Lain, dan PPN faktur sama dengan invoice/.test(c.message)));
 });
 
+test("Jumlah baris selisih Rp 1 dari Sub Total karena pembulatan di invoice: tetap siap tanpa edit", () => {
+  // Excel menyimpan 270.000 ÷ 1,11 = 243.243,24 dan 290.000 ÷ 1,11 = 261.261,26 lalu mencetak 243.243 dan 261.261
+  // (jumlahnya 504.504), sedangkan Sub Total dijumlah sebelum dibulatkan: 504.504,50 dicetak 504.505.
+  const summary = { subTotal: 504505, dpp: 462462, ppn: 55495, total: 560000 };
+  const f = computeFaktur(invoice([["SIKU", 3, "BTG", 81081, 243243], ["HOLLO", 2, "BTG", 130631, 261261]], summary), data);
+  assert.deepEqual(problems(f), []);
+  assert.ok(f.ready);
+  assert.ok(f.checks.some((c) => c.level === "info" && /Jumlah semua baris \(Rp 504\.504\) selisih Rp 1 dari Sub Total \(Rp 504\.505\)/.test(c.message)));
+  assert.equal(Math.round(f.totals.taxBaseSen / 100), 504505); // DPP faktur tetap sama dengan Sub Total
+
+  // Selisih yang besar (mis. ada baris yang tidak terbaca) tetap ditolak
+  const missing = computeFaktur(invoice([["SIKU", 3, "BTG", 81081, 243243]], summary), data);
+  assert.equal(missing.ready, false);
+  assert.ok(problems(missing).some((m) => /tidak sama dengan Sub Total/.test(m)));
+});
+
 test("selisih Rp 1 karena pembulatan hanya jadi info, faktur tetap siap", () => {
   // 55.000 × 4 dan 90.000 × 3 termasuk PPN: DPP nilai lain eksak 404.654,65, invoice mencetak 404.654
   const f = computeFaktur(invoice([["BESI A", 4, "BTG", 49550, 198198], ["BESI B", 3, "BTG", 81081, 243243]]), data);

@@ -140,13 +140,18 @@ export function computeFaktur(invoice, data, settings = {}) {
   if (!invoice.summary) check("error", "Ringkasan (Sub Total, PPN, Total) tidak ditemukan");
   if (!lines.length) check("error", "Tidak ada baris barang yang terbaca");
 
-  // 2. Jumlah semua baris sama dengan Sub Total
+  // 2. Jumlah semua baris sama dengan Sub Total. Excel menyimpan Jumlah per baris dengan desimal
+  //    (harga termasuk PPN ÷ 1,11) dan hanya mencetaknya dibulatkan, sedangkan Sub Total dijumlah dari
+  //    angka sebelum dibulatkan. Jadi jumlah angka yang tercetak boleh selisih sedikit dari Sub Total.
   const linesTotal = lines.reduce((a, l) => a + toSen(l.total ?? 0), 0);
   if (invoice.summary && lines.length) {
-    if (linesTotal !== toSen(sum.subTotal)) {
-      check("error", `Jumlah semua baris (${rupiah(linesTotal)}) tidak sama dengan Sub Total (${rupiah(toSen(sum.subTotal))})`);
+    const diffSen = linesTotal - toSen(sum.subTotal);
+    const roundingSen = Math.max(1, Math.ceil(lines.length / 2)) * 100; // setengah rupiah per baris
+    if (!diffSen) check("ok", `Jumlah ${lines.length} baris barang sama dengan Sub Total`);
+    else if (Math.abs(diffSen) <= roundingSen) {
+      check("info", `Jumlah semua baris (${rupiah(linesTotal)}) selisih ${rupiah(Math.abs(diffSen))} dari Sub Total (${rupiah(toSen(sum.subTotal))}) karena pembulatan di invoice. Invoice tidak perlu diedit.`);
     } else {
-      check("ok", `Jumlah ${lines.length} baris barang sama dengan Sub Total`);
+      check("error", `Jumlah semua baris (${rupiah(linesTotal)}) tidak sama dengan Sub Total (${rupiah(toSen(sum.subTotal))})`);
     }
   }
 

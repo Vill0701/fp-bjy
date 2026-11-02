@@ -144,9 +144,10 @@ export function computeFaktur(invoice, data, settings = {}) {
   //    (harga termasuk PPN ÷ 1,11) dan hanya mencetaknya dibulatkan, sedangkan Sub Total dijumlah dari
   //    angka sebelum dibulatkan. Jadi jumlah angka yang tercetak boleh selisih sedikit dari Sub Total.
   const linesTotal = lines.reduce((a, l) => a + toSen(l.total ?? 0), 0);
+  const roundingSen = Math.max(1, Math.ceil(lines.length / 2)) * 100; // selisih pembulatan: setengah rupiah per baris
+  const linesMatchSubTotal = linesTotal === toSen(sum.subTotal);
   if (invoice.summary && lines.length) {
     const diffSen = linesTotal - toSen(sum.subTotal);
-    const roundingSen = Math.max(1, Math.ceil(lines.length / 2)) * 100; // setengah rupiah per baris
     if (!diffSen) check("ok", `Jumlah ${lines.length} baris barang sama dengan Sub Total`);
     else if (Math.abs(diffSen) <= roundingSen) {
       check("info", `Jumlah semua baris (${rupiah(linesTotal)}) selisih ${rupiah(Math.abs(diffSen))} dari Sub Total (${rupiah(toSen(sum.subTotal))}) karena pembulatan di invoice. Invoice tidak perlu diedit.`);
@@ -240,21 +241,51 @@ export function computeFaktur(invoice, data, settings = {}) {
     check("info", `Harga dihitung dari harga termasuk PPN, seperti di template Excel (mis. ${rupiah(rebuilt.unitInclusive * 100)} ÷ 1,11 = ${rupiah(rebuilt.priceSen)})`);
   }
 
-  const totals = {
-    taxBaseSen: fakturLines.reduce((a, l) => a + l.taxBaseSen, 0),
-    otherTaxBaseSen: fakturLines.reduce((a, l) => a + l.otherTaxBaseSen, 0),
-    vatSen: fakturLines.reduce((a, l) => a + l.vatSen, 0),
+  // 6. Cara hitung. Bawaannya mengikuti template Excel. Kalau DPP faktur selisih pembulatan dari Sub Total,
+  //    ada pilihan kedua: selisih itu dimasukkan ke baris terbesar supaya DPP pas dengan Sub Total. Yang dipakai
+  //    adalah yang paling banyak sama dengan invoice (Sub Total, DPP, PPN), kecuali pengguna memilih sendiri.
+  const totalsOf = (ls) => ({
+    taxBaseSen: ls.reduce((a, l) => a + l.taxBaseSen, 0),
+    otherTaxBaseSen: ls.reduce((a, l) => a + l.otherTaxBaseSen, 0),
+    vatSen: ls.reduce((a, l) => a + l.vatSen, 0),
+  });
+  // Total faktur dibulatkan ke rupiah, seperti yang tertulis di faktur Coretax.
+  const compareWithInvoice = (totals) =>
+    !invoice.summary || mode === "unknown" || !lines.length
+      ? []
+      : [
+          ["DPP", totals.taxBaseSen, mode === "inclusive" ? null : sum.subTotal - sum.discount],
+          ["DPP Nilai Lain", totals.otherTaxBaseSen, invoice.summary.dpp ?? null],
+          ["PPN", totals.vatSen, sum.ppn],
+        ]
+          .filter(([, , want]) => want != null)
+          .map(([label, sen, want]) => ({ label, sen, want, diff: Math.round(sen / 100) - want }));
+  const variant = (key, label, ls, extra = {}) => {
+    const totals = totalsOf(ls);
+    const compared = compareWithInvoice(totals);
+    return { key, label, lines: ls, totals, compared, matches: compared.filter((c) => !c.diff).length, ...extra };
   };
 
-  // 6. Total faktur, dibulatkan ke rupiah seperti di faktur Coretax, harus sama dengan invoice
-  if (invoice.summary && mode !== "unknown" && lines.length) {
-    const compared = [
-      ["DPP", totals.taxBaseSen, mode === "inclusive" ? null : sum.subTotal - sum.discount],
-      ["DPP Nilai Lain", totals.otherTaxBaseSen, invoice.summary.dpp ?? null],
-      ["PPN", totals.vatSen, sum.ppn],
-    ]
-      .filter(([, , want]) => want != null)
-      .map(([label, sen, want]) => ({ label, sen, want, diff: Math.round(sen / 100) - want }));
+  const variants = [variant("template", "Ikuti template Excel", fakturLines)];
+  if (invoice.summary && mode === "exclusive" && lines.length) {
+    const adjustSen = toSen(sum.subTotal - sum.discount) - variants[0].totals.taxBaseSen;
+    if (adjustSen && Math.abs(adjustSen) <= roundingSen) {
+      const at = fakturLines.reduce((best, l, i) => (l.taxBaseSen > fakturLines[best].taxBaseSen ? i : best), 0);
+      const adjusted = fakturLines.map((l, i) => (i === at ? { ...l, ...amounts(l.taxBaseSen + adjustSen, 1, s) } : l));
+      variants.push(variant("subtotal", "DPP pas dengan Sub Total", adjusted, { adjustSen, adjustLine: at + 1 }));
+    }
+  }
+  const chosen =
+    variants.find((v) => v.key === invoice.roundingFix) ?? variants.reduce((best, v) => (v.matches > best.matches ? v : best));
+  // Pilihan hanya ditampilkan kalau ada yang perlu diputuskan: jumlah baris tidak pas dengan Sub Total,
+  // atau cara template Excel tidak sama persis dengan invoice.
+  const showOptions = variants.length > 1 && (!linesMatchSubTotal || variants[0].matches < variants[0].compared.length);
+  const { totals, compared } = chosen;
+  if (chosen.key === "subtotal") {
+    check("info", `DPP dipaskan dengan Sub Total invoice: selisih ${rupiah(Math.abs(chosen.adjustSen))} dimasukkan ke baris ${chosen.adjustLine}`);
+  }
+
+  if (compared.length) {
     if (compared.every((c) => c.diff === 0)) {
       const labels = compared.map((c) => c.label);
       const listed = labels.length < 3 ? labels.join(" dan ") : `${labels.slice(0, -1).join(", ")}, dan ${labels.at(-1)}`;
@@ -285,8 +316,11 @@ export function computeFaktur(invoice, data, settings = {}) {
     buyer,
     trxCode: override.trxCode || s.trxCode,
     vatMode: mode,
-    lines: fakturLines,
+    lines: chosen.lines,
     totals,
+    compared, // total faktur dibandingkan dengan invoice
+    choice: chosen.key,
+    options: showOptions ? variants.map(({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine }) => ({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine })) : [],
     checks,
     ready: !checks.some((c) => c.level === "error"),
   };

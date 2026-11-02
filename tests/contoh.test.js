@@ -176,6 +176,7 @@ test("isi PDF contoh terbaca sesuai nilai yang sudah diperiksa", { skip }, async
     );
     const f = computeFaktur(inv, data, { sellerName: want.seller });
     assert.deepEqual(problems(f), [], want.number);
+    assert.ok(f.ready, want.number);
     if (want.faktur) {
       assert.deepEqual(
         Object.fromEntries(Object.keys(want.faktur).map((key) => [key, f.lines.map((l) => l[key])])),
@@ -183,6 +184,9 @@ test("isi PDF contoh terbaca sesuai nilai yang sudah diperiksa", { skip }, async
         want.number,
       );
     }
+    // Pilihan cara hitung yang ditampilkan: [pilihan, berapa total yang sama dengan invoice]
+    assert.deepEqual(f.options.map((o) => [o.key, o.matches]), want.options ?? [], want.number);
+    assert.equal(f.choice, want.choice ?? "template", want.number);
   }
 });
 
@@ -198,9 +202,10 @@ test("XML buatan pengguna dari template Excel bisa dibuat ulang persis", { skip 
     const expected = readFileSync(join(root, name));
     const xml = expected.toString("utf8");
     const items = {};
-    // Invoice disusun ulang seperti yang dicetak sistem penjual: Harga dan Jumlah dibulatkan ke rupiah,
-    // PPN = 11% × Sub Total, DPP = 11/12 × Sub Total.
+    // Invoice disusun ulang seperti yang dicetak Excel penjual: Harga dan Jumlah dibulatkan ke rupiah, sedangkan
+    // Sub Total, DPP (11/12), dan PPN (11%) dihitung dari Jumlah sebelum dibulatkan, lalu dibulatkan.
     const invoices = blocks(xml, "TaxInvoice").map((block) => {
+      const exactSen = blocks(block, "GoodService").reduce((a, gs) => a + Math.round(Number(tag(gs, "TaxBase")) * 100), 0);
       const lines = blocks(block, "GoodService").map((gs, i) => {
         const lineName = unescapeXml(tag(gs, "Name"));
         if (tag(gs, "Code") !== "720000") items[nameKey(lineName)] = { coretaxCode: tag(gs, "Code") };
@@ -214,8 +219,8 @@ test("XML buatan pengguna dari template Excel bisa dibuat ulang persis", { skip 
           total: Math.round(Number(tag(gs, "TaxBase"))),
         };
       });
-      const subTotal = lines.reduce((a, l) => a + l.total, 0);
-      const ppn = Math.round((subTotal * 11) / 100);
+      const subTotal = Math.round(exactSen / 100);
+      const ppn = Math.round((exactSen * 11) / 10000);
       return {
         number: tag(block, "RefDesc"),
         date: tag(block, "TaxInvoiceDate"),
@@ -223,7 +228,7 @@ test("XML buatan pengguna dari template Excel bisa dibuat ulang persis", { skip 
         buyerName: "",
         buyerNpwp: tag(block, "BuyerTin"),
         lines,
-        summary: { subTotal, discount: 0, dpp: Math.round((subTotal * 11) / 12), ppn, total: subTotal + ppn },
+        summary: { subTotal, discount: 0, dpp: Math.round((exactSen * 11) / 1200), ppn, total: subTotal + ppn },
         warnings: [],
       };
     });

@@ -65,9 +65,15 @@ test("invoice dari harga termasuk PPN dihitung seperti template Excel", () => {
   assert.deepEqual(pick(f, "vatSen"), [2675676]);
   assert.ok(f.checks.some((c) => c.level === "info" && /90\.000 ÷ 1,11 = Rp 81\.081,08/.test(c.message)));
   assert.ok(f.checks.some((c) => c.level === "ok" && /DPP, DPP Nilai Lain, dan PPN faktur sama dengan invoice/.test(c.message)));
+  // Sudah sama persis dengan invoice: tidak perlu ada pilihan cara hitung
+  assert.equal(f.choice, "template");
+  assert.deepEqual(f.options, []);
+  assert.deepEqual(f.compared.map((c) => [c.label, c.want, c.diff]), [["DPP", 243243, 0], ["DPP Nilai Lain", 222973, 0], ["PPN", 26757, 0]]);
 });
 
-test("Jumlah baris selisih Rp 1 dari Sub Total karena pembulatan di invoice: tetap siap tanpa edit", () => {
+const options = (f) => f.options.map((o) => [o.key, o.matches]);
+
+test("Jumlah baris selisih Rp 1 dari Sub Total karena pembulatan di invoice: tetap siap tanpa edit, dengan pilihan", () => {
   // Excel menyimpan 270.000 ÷ 1,11 = 243.243,24 dan 290.000 ÷ 1,11 = 261.261,26 lalu mencetak 243.243 dan 261.261
   // (jumlahnya 504.504), sedangkan Sub Total dijumlah sebelum dibulatkan: 504.504,50 dicetak 504.505.
   const summary = { subTotal: 504505, dpp: 462462, ppn: 55495, total: 560000 };
@@ -76,19 +82,40 @@ test("Jumlah baris selisih Rp 1 dari Sub Total karena pembulatan di invoice: tet
   assert.ok(f.ready);
   assert.ok(f.checks.some((c) => c.level === "info" && /Jumlah semua baris \(Rp 504\.504\) selisih Rp 1 dari Sub Total \(Rp 504\.505\)/.test(c.message)));
   assert.equal(Math.round(f.totals.taxBaseSen / 100), 504505); // DPP faktur tetap sama dengan Sub Total
+  // Dua pilihan ditampilkan; template Excel lebih banyak cocok dengan invoice, jadi itu yang dipakai
+  assert.deepEqual(options(f), [["template", 2], ["subtotal", 1]]);
+  assert.equal(f.choice, "template");
 
-  // Selisih yang besar (mis. ada baris yang tidak terbaca) tetap ditolak
+  // Selisih yang besar (mis. ada baris yang tidak terbaca) tetap ditolak, tanpa pilihan
   const missing = computeFaktur(invoice([["SIKU", 3, "BTG", 81081, 243243]], summary), data);
   assert.equal(missing.ready, false);
   assert.ok(problems(missing).some((m) => /tidak sama dengan Sub Total/.test(m)));
+  assert.deepEqual(missing.options, []);
 });
 
-test("selisih Rp 1 karena pembulatan hanya jadi info, faktur tetap siap", () => {
-  // 55.000 × 4 dan 90.000 × 3 termasuk PPN: DPP nilai lain eksak 404.654,65, invoice mencetak 404.654
-  const f = computeFaktur(invoice([["BESI A", 4, "BTG", 49550, 198198], ["BESI B", 3, "BTG", 81081, 243243]]), data);
+test("DPP dipaskan dengan Sub Total kalau itu yang membuat faktur sama dengan invoice; bisa dipilih manual", () => {
+  // 55.000 × 4 dan 90.000 × 3 termasuk PPN. Cara template: DPP 441.441,44 dan DPP nilai lain 404.654,65 (invoice 404.654).
+  const inv = invoice([["BESI A", 4, "BTG", 49550, 198198], ["BESI B", 3, "BTG", 81081, 243243]]);
+  const f = computeFaktur(inv, data);
+  assert.deepEqual(options(f), [["template", 2], ["subtotal", 3]]);
+  assert.equal(f.choice, "subtotal");
   assert.deepEqual(problems(f), []);
   assert.ok(f.ready);
-  assert.ok(f.checks.some((c) => c.level === "info" && /DPP Nilai Lain faktur .* beda Rp 1/.test(c.message)));
+  // Selisih −0,44 masuk ke baris terbesar (baris 2); DPP nilai lain dan PPN baris itu dihitung ulang
+  assert.deepEqual(pick(f, "taxBaseSen"), [19819820, 24324280]);
+  assert.deepEqual(pick(f, "otherTaxBaseSen"), [18168168, 22297257]);
+  assert.deepEqual(pick(f, "vatSen"), [2180180, 2675671]);
+  assert.deepEqual(pick(f, "priceSen"), [4954955, 8108108]); // harga satuan tidak berubah
+  assert.equal(f.totals.taxBaseSen, 44144100);
+  assert.ok(f.compared.every((c) => c.diff === 0));
+  assert.ok(f.checks.some((c) => c.level === "info" && c.message === "DPP dipaskan dengan Sub Total invoice: selisih Rp 0,44 dimasukkan ke baris 2"));
+
+  // Pengguna tetap bisa memilih cara template Excel; selisih Rp 1 hanya jadi info
+  const template = computeFaktur({ ...inv, roundingFix: "template" }, data);
+  assert.equal(template.choice, "template");
+  assert.deepEqual(pick(template, "taxBaseSen"), [19819820, 24324324]);
+  assert.deepEqual(problems(template), []);
+  assert.ok(template.checks.some((c) => c.level === "info" && /DPP Nilai Lain faktur .* beda Rp 1/.test(c.message)));
 });
 
 test("harga bulat sebelum PPN: angka faktur sama persis dengan invoice", () => {

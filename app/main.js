@@ -290,15 +290,71 @@ function invoiceCard(invoice, f) {
     buyerBlock(invoice, f),
     details(`checks:${f.number}`, errors + warnings > 0, `Pemeriksaan (${f.checks.length})`,
       h("ul", { class: "checks" }, f.checks.map((c) => h("li", { class: c.level }, c.message)))),
+    f.options.length > 0 && choiceBox(invoice, f),
     details(`lines:${f.number}`, incomplete > 0, `${f.lines.length} baris barang${incomplete ? ` · ${incomplete} belum lengkap` : ""}`,
       f.lines.map((line, i) => lineRow(line, i))),
+    totalsTable(f),
+  );
+}
+
+/** Total faktur di samping Sub Total, DPP, dan PPN invoice; ✓ kalau sama setelah dibulatkan seperti di faktur Coretax. */
+function totalsTable(f) {
+  const rows = [["DPP", "taxBaseSen"], ["DPP Nilai Lain", "otherTaxBaseSen"], ["PPN", "vatSen"]];
+  return h(
+    "table",
+    { class: "totals" },
+    h("caption", {}, "Invoice: Sub Total, DPP, dan PPN di invoice. ✓ = sama setelah dibulatkan ke rupiah, seperti di faktur Coretax."),
+    h("thead", {}, h("tr", {}, h("th", {}), h("th", {}, "Faktur"), h("th", {}, "Invoice"))),
     h(
-      "dl",
-      { class: "totals" },
-      h("dt", {}, "DPP"), h("dd", {}, num(f.totals.taxBaseSen)),
-      h("dt", {}, "DPP Nilai Lain"), h("dd", {}, num(f.totals.otherTaxBaseSen)),
-      h("dt", {}, "PPN"), h("dd", {}, num(f.totals.vatSen)),
+      "tbody",
+      {},
+      rows.map(([label, key]) => {
+        const c = f.compared.find((x) => x.label === label);
+        return h(
+          "tr",
+          {},
+          h("th", { scope: "row" }, label),
+          h("td", {}, num(f.totals[key])),
+          c ? h("td", { class: c.diff ? "diff" : "same" }, `${num(c.want * 100)} ${c.diff ? "≠" : "✓"}`) : h("td", { class: "muted" }, "–"),
+        );
+      }),
     ),
+  );
+}
+
+/** Pilihan cara hitung kalau jumlah baris atau total faktur selisih pembulatan dengan invoice. */
+function choiceBox(invoice, f) {
+  const best = Math.max(...f.options.map((o) => o.matches));
+  const title = (o) =>
+    o.key === "subtotal"
+      ? `${o.label} (selisih ${num(Math.abs(o.adjustSen))} masuk ke baris ${o.adjustLine})`
+      : `${o.label} (harga termasuk PPN ÷ 1,11)`;
+  const describe = (o) => {
+    const off = o.compared.filter((c) => c.diff).map((c) => `${c.label} beda ${num(Math.abs(c.diff) * 100)}`);
+    const t = o.totals;
+    return `DPP ${num(t.taxBaseSen)} · DPP Nilai Lain ${num(t.otherTaxBaseSen)} · PPN ${num(t.vatSen)}. ` +
+      (off.length ? `${off.join(", ")} dari invoice.` : "Sama dengan invoice setelah dibulatkan.");
+  };
+  return h(
+    "fieldset",
+    { class: "choice" },
+    h("legend", {}, "Pilih cara hitung"),
+    f.options.map((o) =>
+      h(
+        "label",
+        { class: o.key === f.choice ? "chosen" : "" },
+        h("input", {
+          type: "radio",
+          name: `cara-${f.number}`,
+          value: o.key,
+          checked: o.key === f.choice,
+          onchange: () => {
+            invoice.roundingFix = o.key;
+            render();
+          },
+        }),
+        h("span", {}, h("strong", {}, title(o), o.matches === best ? " · paling cocok dengan invoice" : ""), h("small", {}, describe(o))),
+      )),
   );
 }
 

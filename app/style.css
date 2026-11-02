@@ -206,9 +206,21 @@ summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 .result:hover { background: var(--bg); }
 .result small { display: block; color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
 
-.totals { display: grid; grid-template-columns: 1fr auto; gap: 2px 16px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
-.totals dt { color: var(--muted); }
-.totals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.totals { width: 100%; border-collapse: collapse; margin: 12px 0 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.totals th, .totals td { padding: 3px 0; text-align: right; font-weight: 600; }
+.totals td { padding-left: 12px; }
+.totals thead th { color: var(--muted); font-size: 0.8rem; padding-top: 8px; }
+.totals tbody th { text-align: left; color: var(--muted); font-weight: 400; }
+.totals td.same { color: var(--ok); }
+.totals td.diff { color: var(--warn); }
+.totals caption { caption-side: bottom; text-align: left; color: var(--muted); font-size: 0.8rem; padding-top: 6px; }
+
+.choice { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px 8px; margin: 10px 0; }
+.choice legend { font-weight: 600; padding: 0 4px; }
+.choice label { display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 8px; cursor: pointer; }
+.choice label.chosen { background: var(--info-bg); }
+.choice input { width: auto; min-height: 0; margin: 3px 0 0; flex: none; }
+.choice small { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
 
 .export p { margin: 4px 0; }
 .export-bar {

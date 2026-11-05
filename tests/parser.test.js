@@ -98,12 +98,37 @@ test("membaca kop, pembeli, NPWP, baris barang, dan ringkasan", () => {
   ]);
 });
 
+/** Isi invoice tanpa posisi tanda (posisi memang ikut berubah kalau halamannya diperkecil). */
+const content = ({ marks, ...inv }) => inv;
+
 test("kolom tetap terbaca walau halaman diperkecil dan bergeser", () => {
   const normal = parseInvoices([page(1, { number: "J260000001", rows: ROWS, summary: SUMMARY })]).invoices[0];
   for (const [scale, dx] of [[0.85, 40], [0.7, 90], [1.2, -10]]) {
     const scaled = parseInvoices([page(1, { number: "J260000001", rows: ROWS, summary: SUMMARY, scale, dx })]).invoices[0];
-    assert.deepEqual(scaled, normal, `skala ${scale}`);
+    assert.deepEqual(content(scaled), content(normal), `skala ${scale}`);
   }
+});
+
+test("posisi teks yang dibaca dicatat untuk ditandai saat PDF ditampilkan", () => {
+  const [one, two] = parseInvoices([
+    page(1, { number: "J260000001", rows: ROWS, summary: SUMMARY }),
+    page(2, { number: "J260000002", rows: ROWS.slice(0, 1), summary: SUMMARY }),
+  ]).invoices;
+  assert.deepEqual(Object.keys(one.marks.header), ["number", "date", "customer", "npwp"]);
+  assert.deepEqual(Object.keys(one.marks.summary), ["subTotal", "discount", "dpp", "ppn", "total"]);
+  assert.equal(one.marks.lines.length, one.lines.length);
+  one.marks.lines.forEach((m, i) => {
+    const baseline = 171.3 + i * 9.8;
+    assert.equal(m.page, 1);
+    assert.ok(m.top < baseline && baseline < m.bottom && m.bottom - m.top < 12, `baris ${i + 1}: tinggi kotak`);
+    assert.ok(m.x0 <= 64 && m.x1 >= 528, `baris ${i + 1}: dari nama barang sampai Jumlah`);
+  });
+  assert.ok(one.marks.lines[0].bottom < one.marks.lines[1].top, "kotak baris tidak bertumpuk");
+  // Nilai ringkasan: dari label sampai angkanya
+  assert.ok(one.marks.summary.ppn.x0 < 409 && one.marks.summary.ppn.x1 >= 528);
+  // Invoice di halaman 2: semua tanda di halaman 2
+  const all = (inv) => [...Object.values(inv.marks.header), ...inv.marks.lines, ...Object.values(inv.marks.summary)];
+  assert.ok(all(two).every((m) => m.page === 2));
 });
 
 test("satu PDF berisi beberapa invoice, satu per halaman", () => {
@@ -138,6 +163,8 @@ test("nama yang turun ke baris lain disambung ke baris barang terdekat, dengan p
   assert.equal(inv.lines.length, 1);
   assert.equal(inv.lines[0].name, "PIPA BESI UKURAN PANJANG SEKALI");
   assert.match(inv.warnings.join("\n"), /lebih dari satu baris/);
+  // Tanda di PDF menutupi kedua baris teks nama itu
+  assert.ok(inv.marks.lines[0].top < 165 && inv.marks.lines[0].bottom > 171.3);
 });
 
 test("kolom Disc dan invoice tanpa NPWP", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addHistory, DEFAULT_PREFS, parseBackup, parseData, serializeData, updateItem } from "../src/data.js";
+import { addHistory, DEFAULT_PREFS, exportStatus, parseBackup, parseData, serializeData, updateItem } from "../src/data.js";
 import { normalizeNitku, normalizeNpwp } from "../src/npwp.js";
 import { DEFAULT_UNITS } from "../src/satuan.js";
 
@@ -47,6 +47,28 @@ test("kode barang: isian kosong kembali ke bawaan", () => {
   assert.equal(data.items["PIPA KHUSUS"].unit, "UM.0019");
   updateItem(data, "PIPA KHUSUS", { coretaxCode: "", unit: "" });
   assert.deepEqual(data.items, {});
+});
+
+test("invoice yang sudah pernah dibuatkan XML dikenali, kecuali daftar yang sama baru saja di-download", () => {
+  const history = [
+    { number: "J1", file: "01-11 FP BJY.xml", exportedAt: "2026-11-01 09:00", batch: 1 },
+    { number: "J2", file: "01-11 FP BJY.xml", exportedAt: "2026-11-01 09:00", batch: 1 },
+    { number: "J1", file: "05-11 FP BJY.xml", exportedAt: "2026-11-05 18:25", batch: 2 },
+  ];
+  // Belum pernah: tidak dicantumkan; pernah: riwayat terakhirnya
+  assert.deepEqual(exportStatus(history, ["J3"]), {});
+  assert.deepEqual(exportStatus([], ["J1"]), {});
+  const status = exportStatus(history, ["J1", "J3"]);
+  assert.deepEqual(Object.keys(status), ["J1"]);
+  assert.equal(status.J1.state, "previous");
+  assert.equal(status.J1.previous.file, "05-11 FP BJY.xml");
+
+  // Daftar yang sama persis dengan XML yang baru di-download (urutan boleh beda): "done"
+  const last = { numbers: ["J1", "J2"] };
+  assert.deepEqual(Object.values(exportStatus(history, ["J2", "J1"], last)).map((s) => s.state), ["done", "done"]);
+  // Daftarnya berubah (ada yang ditambah atau dihapus): yang sudah pernah dibuat harus dipilih lagi
+  assert.deepEqual(Object.entries(exportStatus(history, ["J1", "J2", "J3"], last)).map(([n, s]) => [n, s.state]), [["J1", "previous"], ["J2", "previous"]]);
+  assert.deepEqual(Object.entries(exportStatus(history, ["J1"], last)).map(([n, s]) => [n, s.state]), [["J1", "previous"]]);
 });
 
 test("riwayat dibatasi 1000 baris terakhir", () => {

@@ -69,3 +69,20 @@ export function updateItem(data, name, changes) {
 export function addHistory(data, entries) {
   data.history = [...data.history, ...entries].slice(-MAX_HISTORY);
 }
+
+/**
+ * Invoice di daftar yang sudah pernah dibuatkan XML, supaya faktur tidak terbit dua kali di Coretax.
+ * - "done": daftar ini sama dengan XML yang baru saja di-download (lastExport); boleh di-download ulang
+ *   dengan konfirmasi, karena isinya file yang sama.
+ * - "previous": pernah dibuatkan XML sebelumnya; harus dipilih dulu: hapus dari daftar, atau tetap buat lagi.
+ * Invoice yang belum pernah dibuatkan XML tidak dicantumkan. `previous` = riwayat terakhir invoice itu.
+ */
+export function exportStatus(history, numbers, lastExport = null) {
+  const sameList = Boolean(lastExport) && numbers.length === lastExport.numbers.length && numbers.every((n) => lastExport.numbers.includes(n));
+  const status = {};
+  for (const number of numbers) {
+    const previous = history.filter((r) => r.number === number).at(-1);
+    if (previous) status[number] = { state: sameList ? "done" : "previous", previous };
+  }
+  return status;
+}

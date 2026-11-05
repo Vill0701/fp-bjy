@@ -13,7 +13,7 @@ import { computeFaktur, nameKey } from "../src/calc.js";
 import { parseInvoices } from "../src/parser.js";
 import { extractPages } from "../src/pdf-text.js";
 import { DEFAULT_UNITS, UNIT_NAMES } from "../src/satuan.js";
-import { buildXml } from "../src/xml.js";
+import { buildXml, verifyXml } from "../src/xml.js";
 
 const root = fileURLToPath(new URL("../contoh/", import.meta.url));
 const skip = !existsSync(root) && "folder contoh/ tidak ada";
@@ -135,9 +135,29 @@ test("invoice yang sama di PDF gabungan dan PDF tersendiri terbaca sama", { skip
   const { invoices } = await samples;
   for (const [number, copies] of invoices) {
     for (const { file, invoice } of copies.slice(1)) {
-      const { pages: _a, ...first } = copies[0].invoice;
-      const { pages: _b, ...other } = invoice;
+      const { pages: _a, marks: _c, ...first } = copies[0].invoice;
+      const { pages: _b, marks: _d, ...other } = invoice;
       assert.deepEqual(other, first, `${number} di ${file}`);
+    }
+  }
+});
+
+test("tanda bagian yang dibaca ada di dalam halaman PDF asli, satu per baris barang", { skip }, async () => {
+  const { invoices } = await samples;
+  for (const [number, [{ invoice }]] of invoices) {
+    const { header, lines, summary } = invoice.marks;
+    assert.deepEqual(Object.keys(header), ["number", "date", "customer", "npwp"], number);
+    assert.deepEqual(Object.keys(summary), Object.keys(invoice.summary), number);
+    assert.equal(lines.length, invoice.lines.length, number);
+    const all = [...Object.values(header), ...lines, ...Object.values(summary)];
+    for (const m of all) {
+      assert.ok(invoice.pages.includes(m.page), `${number}: halaman ${m.page}`);
+      // Halaman invoice A5 mendatar: 595 × 420 pt
+      assert.ok(m.x0 >= 0 && m.x1 <= 596 && m.top >= 0 && m.bottom <= 420 && m.x0 < m.x1 && m.top < m.bottom, `${number}: ${JSON.stringify(m)}`);
+    }
+    // Baris barang berurutan dari atas ke bawah dan tidak bertumpuk
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].page === lines[i - 1].page) assert.ok(lines[i - 1].bottom <= lines[i].top + 0.5, `${number}: baris ${i} dan ${i + 1}`);
     }
   }
 });
@@ -146,6 +166,7 @@ test("isi PDF contoh terbaca sesuai nilai yang sudah diperiksa", { skip }, async
   const file = join(root, "harapan.json");
   if (!existsSync(file)) return t.skip("contoh/harapan.json tidak ada");
   const { invoices } = await samples;
+  const checked = [];
   for (const want of JSON.parse(readFileSync(file, "utf8")).invoices) {
     if (!invoices.has(want.number)) {
       t.diagnostic(`${want.number}: PDF-nya belum ada di contoh/, dilewati`);
@@ -187,7 +208,12 @@ test("isi PDF contoh terbaca sesuai nilai yang sudah diperiksa", { skip }, async
     // Pilihan cara hitung yang ditampilkan: [pilihan, berapa total yang sama dengan invoice]
     assert.deepEqual(f.options.map((o) => [o.key, o.matches]), want.options ?? [], want.number);
     assert.equal(f.choice, want.choice ?? "template", want.number);
+    checked.push(f);
   }
+  // Semua invoice contoh dalam satu XML lolos pemeriksaan sebelum download (penjual tiruan, bukan NPWP asli)
+  const tin = "0" + "9".repeat(15);
+  const seller = { tin, idtku: tin + "000000" };
+  assert.deepEqual(verifyXml(buildXml(seller, checked), seller, checked), []);
 });
 
 // Pembacaan XML sederhana (tanpa DOM parser), cukup untuk file contoh.
@@ -234,8 +260,11 @@ test("XML buatan pengguna dari template Excel bisa dibuat ulang persis", { skip 
     });
     const fakturs = invoices.map((inv) => computeFaktur(inv, { items, units: DEFAULT_UNITS }));
     for (const f of fakturs) assert.deepEqual(f.checks.filter((c) => c.level === "error").map((c) => c.message), [], f.number);
-    const out = buildXml({ tin: tag(xml, "TIN"), idtku: tag(xml, "SellerIDTKU") }, fakturs);
+    const seller = { tin: tag(xml, "TIN"), idtku: tag(xml, "SellerIDTKU") };
+    const out = buildXml(seller, fakturs);
     assert.equal(out, xml, name);
     assert.ok(Buffer.from(out, "utf8").equals(expected), `isi byte ${name} berbeda`);
+    // XML buatan pengguna yang sudah diterima Coretax juga lolos pemeriksaan sebelum download
+    assert.deepEqual(verifyXml(out, seller, fakturs), [], name);
   }
 });

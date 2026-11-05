@@ -157,7 +157,6 @@ export function computeFaktur(invoice, data, settings = {}) {
   }
 
   // 3. Qty × Harga = Jumlah, kecuali selisih karena Harga dibulatkan ke rupiah, atau ada diskon per baris
-  const hasLineDiscount = lines.some((l) => l.disc.trim() && parseNumber(l.disc.trim().replace(/%$/, "")) !== 0);
   for (const l of lines) {
     if (l.qty == null || l.price == null || l.total == null) continue; // sudah diperingatkan saat membaca PDF
     const grossSen = Math.round(l.qty * l.price * 100);
@@ -172,14 +171,17 @@ export function computeFaktur(invoice, data, settings = {}) {
     }
   }
 
-  // 4. Harga belum / sudah termasuk PPN
+  // 4. Harga belum / sudah termasuk PPN, dan diskon. Diskon per baris (kolom Disc = potongan per unit) sudah
+  //    dicoba dengan invoice asli: XML-nya berhasil diimpor ke Coretax. Diskon di bawah invoice (DISCOUNT) belum
+  //    ada contohnya, jadi tetap diberi peringatan.
   const mode = invoice.summary ? detectVatMode(sum, lines.length, s) : "unknown";
-  const hasDiscount = hasLineDiscount || sum.discount > 0;
+  const lineDiscounted = lines.map((l) => l.disc.trim() !== "" && parseNumber(l.disc.trim().replace(/%$/, "")) !== 0);
+  const invoiceDiscount = sum.discount > 0;
+  const hasDiscount = invoiceDiscount || lineDiscounted.includes(true);
   if (mode === "exclusive") check("ok", "Harga di invoice belum termasuk PPN (PPN = 11% × Sub Total)");
   else if (mode === "inclusive") check("info", "Harga di invoice sudah termasuk PPN");
   else if (invoice.summary) check("error", "PPN di invoice tidak cocok dengan rumus harga belum maupun sudah termasuk PPN, perlu dicek manual");
   if (mode === "inclusive" && hasDiscount) check("error", "Invoice dengan harga termasuk PPN dan diskon belum didukung. Buat fakturnya manual.");
-  else if (hasDiscount) check("warn", "Invoice ini berdiskon. Belum ada contoh invoice berdiskon, jadi cek lagi angka potongan harganya.");
   if (invoice.summary) {
     const expectedTotal = sum.subTotal - sum.discount + (mode === "inclusive" ? 0 : sum.ppn);
     if (Math.abs(expectedTotal - sum.total) > 1) {
@@ -187,7 +189,9 @@ export function computeFaktur(invoice, data, settings = {}) {
     }
   }
 
-  // 5. Baris faktur
+  // 5. Baris faktur. Baris berdiskon memakai angka invoice apa adanya: harga satuan sebelum diskon, dan
+  //    potongan harga = Qty × Harga − Jumlah. Baris tanpa diskon dihitung seperti biasa, walaupun baris
+  //    lain di invoice yang sama berdiskon.
   const f = inclusiveFactor(s);
   const allocated = allocate(toSen(sum.discount), lines.map((l) => toSen(l.total ?? 0)));
   let rebuilt = null; // contoh harga yang dihitung balik dari harga termasuk PPN
@@ -195,6 +199,7 @@ export function computeFaktur(invoice, data, settings = {}) {
     const qty = l.qty ?? 0;
     const totalSen = toSen(l.total ?? 0);
     const [qn, qd] = qtyFraction(qty);
+    const discounted = lineDiscounted[i] || invoiceDiscount;
     let priceSen;
     let discountSen = 0;
     let exact; // DPP eksak = exact[0] ÷ exact[1] sen
@@ -203,13 +208,13 @@ export function computeFaktur(invoice, data, settings = {}) {
       // Jumlah di invoice sudah termasuk PPN
       exact = [BigInt(totalSen) * BigInt(f.den), f.num];
       priceSen = qn ? ratio([totalSen, f.den, qd], [f.num, qn]) : 0;
-    } else if (!hasDiscount && (unitInclusive = inclusiveUnitPrice(l.price, qty, l.total, s)) != null) {
+    } else if (!discounted && (unitInclusive = inclusiveUnitPrice(l.price, qty, l.total, s)) != null) {
       exact = [BigInt(qn) * BigInt(unitInclusive * 100) * BigInt(f.den), BigInt(qd) * BigInt(f.num)];
       priceSen = ratio([unitInclusive * 100, f.den], [f.num]);
     } else {
       // Angka invoice apa adanya; diskon per baris dan diskon invoice menjadi potongan harga.
       const grossSen = Math.round(qty * (l.price ?? 0) * 100);
-      if (hasDiscount) {
+      if (discounted) {
         priceSen = toSen(l.price ?? 0);
         discountSen = grossSen - totalSen + allocated[i];
         exact = [grossSen - discountSen, 1];
@@ -240,11 +245,22 @@ export function computeFaktur(invoice, data, settings = {}) {
   if (rebuilt) {
     check("info", `Harga dihitung dari harga termasuk PPN, seperti di template Excel (mis. ${rupiah(rebuilt.unitInclusive * 100)} ÷ 1,11 = ${rupiah(rebuilt.priceSen)})`);
   }
+  if (mode !== "inclusive" && hasDiscount) {
+    const discounts = fakturLines.map((l, i) => [i + 1, l.discountSen]).filter(([, d]) => d);
+    const totalDiscount = discounts.reduce((a, [, d]) => a + d, 0);
+    const where = discounts.length === 1 ? `baris ${discounts[0][0]}` : `${discounts.length} baris`;
+    if (invoiceDiscount) {
+      check("warn", `Diskon di bawah invoice (${rupiah(toSen(sum.discount))}) dibagi ke semua baris menurut Jumlah. Belum ada contoh invoice seperti ini, jadi cek lagi potongan harganya di Coretax.`);
+    } else if (discounts.length) {
+      check("info", `Diskon ${where} (total ${rupiah(totalDiscount)}) masuk ke faktur sebagai Potongan Harga. Harga satuan tetap harga sebelum diskon, seperti di invoice.`);
+    }
+  }
 
   // 6. Cara hitung. Bawaannya mengikuti template Excel. Kalau DPP faktur selisih pembulatan dari Sub Total,
   //    ada pilihan kedua: selisih itu dimasukkan ke baris terbesar supaya DPP pas dengan Sub Total. Yang dipakai
   //    adalah yang paling banyak sama dengan invoice (Sub Total, DPP, PPN), kecuali pengguna memilih sendiri.
   const totalsOf = (ls) => ({
+    discountSen: ls.reduce((a, l) => a + l.discountSen, 0),
     taxBaseSen: ls.reduce((a, l) => a + l.taxBaseSen, 0),
     otherTaxBaseSen: ls.reduce((a, l) => a + l.otherTaxBaseSen, 0),
     vatSen: ls.reduce((a, l) => a + l.vatSen, 0),

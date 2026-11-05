@@ -16,8 +16,8 @@ export async function extractPages(pdfjs, data, options = {}) {
       for (const it of content.items) {
         const str = it.str?.trim();
         if (!str) continue;
-        const [, , , , x, y] = pdfjs.Util.transform(viewport.transform, it.transform);
-        items.push({ str, x, y, w: it.width });
+        const [, , c, d, x, y] = pdfjs.Util.transform(viewport.transform, it.transform);
+        items.push({ str, x, y, w: it.width, h: Math.hypot(c, d) }); // y = garis dasar huruf, h = tinggi huruf
       }
       pages.push({ number, items });
     }

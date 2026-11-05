@@ -37,15 +37,34 @@ const sameLine = (a, b) => Math.abs(a.y - b.y) <= TOL;
 const center = (it) => it.x + it.w / 2;
 const labelOf = (it) => it.str.replace(/\s*:$/, ""); // "TOTAL :" → "TOTAL"
 const isRule = (it) => /^=+$/.test(it.str); // garis "=====" pembatas tabel
+const valueText = (it) => (it ? it.str.replace(/^:\s*/, "") : "");
 
 /** Teks terdekat di kanan label pada baris yang sama, melewati tanda ":". */
-function valueRightOf(items, label) {
+function itemRightOf(items, label) {
   const start = label.x + label.w;
-  const value = items
-    .filter((it) => it.str !== ":" && sameLine(it, label) && it.x > start)
-    .sort((a, b) => a.x - b.x)[0];
-  return value ? value.str.replace(/^:\s*/, "") : "";
+  return items.filter((it) => it.str !== ":" && sameLine(it, label) && it.x > start).sort((a, b) => a.x - b.x)[0] ?? null;
 }
+
+const DEFAULT_H = 8; // tinggi huruf (pt) kalau tidak diketahui
+
+/**
+ * Kotak (pt, koordinat halaman) yang menutupi teks-teks yang dibaca, untuk ditandai saat PDF ditampilkan:
+ * dari atas huruf sampai sedikit di bawah garis dasarnya.
+ */
+function boxOf(...list) {
+  const its = list.filter(Boolean);
+  if (!its.length) return null;
+  const h = (it) => it.h || DEFAULT_H;
+  return {
+    x0: Math.min(...its.map((it) => it.x)),
+    x1: Math.max(...its.map((it) => it.x + it.w)),
+    top: Math.min(...its.map((it) => it.y - 0.85 * h(it))),
+    bottom: Math.max(...its.map((it) => it.y + 0.3 * h(it))),
+  };
+}
+
+const mergeBoxes = (a, b) =>
+  !a || !b ? a ?? b : { x0: Math.min(a.x0, b.x0), x1: Math.max(a.x1, b.x1), top: Math.min(a.top, b.top), bottom: Math.max(a.bottom, b.bottom) };
 
 function findTableHeader(items) {
   const qty = items.find((it) => it.str === HEADER.qty);
@@ -109,7 +128,7 @@ function parseRows(items, header, bottomY, warnings) {
     const text = (key) => cells[key].join(" ");
 
     if (!cells.qtyUnit.length && !cells.price.length && !cells.total.length) {
-      if (cells.name.length && !cells.disc.length) loose.push({ y: line.y, text: text("name") });
+      if (cells.name.length && !cells.disc.length) loose.push({ y: line.y, text: text("name"), box: boxOf(...line.items) });
       else warnings.push(`baris tabel tidak dikenali: "${line.items.map((it) => it.str).join(" ")}"`);
       continue;
     }
@@ -117,6 +136,7 @@ function parseRows(items, header, bottomY, warnings) {
     const { qty, unit, rest } = splitQtyUnit(cells.qtyUnit.flatMap((s) => s.split(/\s+/)));
     const row = {
       y: line.y,
+      box: boxOf(...line.items),
       name: [...cells.name, ...rest].join(" "),
       qty,
       unit,
@@ -144,12 +164,13 @@ function parseRows(items, header, bottomY, warnings) {
       continue;
     }
     best.row.name = best.row.y > part.y ? `${part.text} ${best.row.name}` : `${best.row.name} ${part.text}`;
+    best.row.box = mergeBoxes(best.row.box, part.box);
     warnings.push(`nama barang "${best.row.name}" tertulis lebih dari satu baris, cek apakah sudah benar`);
   }
   return rows;
 }
 
-function parseSummary(items, fromY) {
+function parseSummary(items, fromY, boxes) {
   const summary = {};
   for (const [text, key] of Object.entries(SUMMARY_LABELS)) {
     const label = items.find((it) => it.y > fromY && labelOf(it) === text);
@@ -157,17 +178,22 @@ function parseSummary(items, fromY) {
     const value = items
       .filter((it) => it.x > label.x + label.w && Math.abs(it.y - label.y) <= 3 && (it.str === "-" || parseNumber(it.str) != null))
       .sort((a, b) => b.x - a.x)[0];
-    if (value) summary[key] = value.str === "-" ? 0 : parseNumber(value.str);
+    if (value) {
+      summary[key] = value.str === "-" ? 0 : parseNumber(value.str);
+      boxes[key] = boxOf(label, value);
+    }
   }
   return Object.keys(summary).length ? summary : null;
 }
 
 /** NPWP pembeli tercetak di bawah alamat: "NPWP : " lalu 16 angka. */
-function findNpwp(items, fromY, toY) {
+function findNpwp(items, fromY, toY, boxes) {
   const label = items.find((it) => /^NPWP\b/i.test(it.str) && it.y > fromY - TOL && it.y < toY);
   if (!label) return "";
   const inline = label.str.replace(/^NPWP\s*:?\s*/i, "");
-  return (/\d/.test(inline) ? inline : valueRightOf(items, label)).trim();
+  const value = /\d/.test(inline) ? null : itemRightOf(items, label);
+  boxes.npwp = boxOf(label, value);
+  return (/\d/.test(inline) ? inline : valueText(value)).trim();
 }
 
 /** Nama penjual: baris paling atas di kop invoice. */
@@ -189,28 +215,38 @@ function parsePage(page) {
   const numberLabel = find("Penjualan");
   const dateLabel = find("Tanggal");
   const customerLabel = find("Customer");
+  // Posisi teks yang dibaca, untuk ditandai saat PDF ditampilkan di aplikasi
+  const marks = { header: {}, summary: {} };
+  const valueOf = (key, label) => {
+    if (!label) return "";
+    const value = itemRightOf(items, label);
+    marks.header[key] = boxOf(label, value);
+    return valueText(value);
+  };
 
-  const dateText = dateLabel ? valueRightOf(items, dateLabel) : "";
+  const number = valueOf("number", numberLabel);
+  const dateText = valueOf("date", dateLabel);
   const date = dateText ? parseDate(dateText) : null;
   if (!dateText) warnings.push("tanggal invoice tidak ditemukan");
   else if (!date) warnings.push(`tanggal tidak terbaca: "${dateText}"`);
 
   // "S0024-PT. CONTOH JAYA": kode pelanggan di depan nama
-  const customer = customerLabel ? valueRightOf(items, customerLabel) : "";
+  const customer = valueOf("customer", customerLabel);
   const named = /^([A-Z]\d{3,5})\s*-\s*(.+)$/.exec(customer);
 
   const subTotalLabel = items.find((it) => labelOf(it) === "SUB TOTAL" && (!header || it.y > header.y));
 
   return {
     page: page.number,
-    number: numberLabel ? valueRightOf(items, numberLabel) : "",
+    number,
     date,
     seller: findSeller(items, numberLabel?.y ?? header?.y ?? Infinity),
     buyerCode: named?.[1] ?? "",
     buyerName: named?.[2] ?? customer,
-    buyerNpwp: findNpwp(items, customerLabel?.y ?? 0, header?.y ?? Infinity),
+    buyerNpwp: findNpwp(items, customerLabel?.y ?? 0, header?.y ?? Infinity, marks.header),
     rows: header ? parseRows(items, header, subTotalLabel?.y ?? Infinity, warnings) : [],
-    summary: header ? parseSummary(items, header.y) : null,
+    summary: header ? parseSummary(items, header.y, marks.summary) : null,
+    marks,
     warnings,
   };
 }
@@ -233,15 +269,24 @@ export function parseInvoices(pages) {
   }
 
   const invoices = [];
+  // Kotak teks yang dibaca, diberi nomor halaman: { page, x0, x1, top, bottom } dalam pt
+  const onPage = (page, boxes) => Object.fromEntries(Object.entries(boxes).filter(([, b]) => b).map(([key, b]) => [key, { page, ...b }]));
   for (const [number, parts] of groups) {
     const { date, seller, buyerCode, buyerName, buyerNpwp } = parts[0];
-    const invoice = { number, date, seller, buyerCode, buyerName, buyerNpwp, pages: [], lines: [], summary: null, warnings: [] };
+    const marks = { header: onPage(parts[0].page, parts[0].marks.header), lines: [], summary: {} };
+    const invoice = { number, date, seller, buyerCode, buyerName, buyerNpwp, pages: [], lines: [], summary: null, warnings: [], marks };
     for (const part of parts) {
       const where = parts.length > 1 ? `Hal. ${part.page}: ` : "";
       invoice.pages.push(part.page);
-      for (const { y, ...row } of part.rows) invoice.lines.push(row);
+      for (const { y, box, ...row } of part.rows) {
+        invoice.lines.push(row);
+        marks.lines.push(box && { page: part.page, ...box });
+      }
       if (part.summary && invoice.summary) invoice.warnings.push(`${where}ringkasan invoice ini muncul lebih dari sekali, mungkin halamannya dobel`);
-      if (part.summary) invoice.summary = part.summary;
+      if (part.summary) {
+        invoice.summary = part.summary;
+        marks.summary = onPage(part.page, part.marks.summary);
+      }
       invoice.warnings.push(...part.warnings.map((w) => where + w));
     }
     invoice.lines.forEach((line, i) => {

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { allocate, computeFaktur, detectVatMode, inclusiveUnitPrice } from "../src/calc.js";
 import { formatSen, mulDiv, ratio } from "../src/money.js";
 import { DEFAULT_UNITS } from "../src/satuan.js";
-import { buildXml } from "../src/xml.js";
+import { buildXml, cleanText, readXml, verifyXml } from "../src/xml.js";
 
 // Data uji buatan, bukan NPWP asli.
 const NPWP = "0" + "2".repeat(15);
@@ -137,14 +137,46 @@ test("harga ganjil sebelum PPN dipakai apa adanya", () => {
   assert.deepEqual([f.lines[0].unitInclusive, f.lines[0].priceSen, f.lines[0].taxBaseSen], [null, 1234500, 1234500]);
 });
 
-test("invoice berdiskon: diskon jadi potongan harga, dengan peringatan untuk dicek", () => {
+test("diskon per baris seperti invoice asli: potongan per unit jadi Potongan Harga, siap tanpa peringatan", () => {
+  // Bentuk invoice berdiskon asli (lihat contoh/harapan.json): kolom Disc 10.000 = potongan per batang,
+  // Jumlah = Qty × (Harga − Disc)
+  const f = computeFaktur(invoice([["SIKU 40/4 X 6MTR", 2, "BTG", 120000, 220000, "10.000"], ["STRIP 5 X 30 X 6MTR", 1, "BTG", 135000, 125000, "10.000"]]), data);
+  assert.deepEqual(problems(f), []);
+  assert.ok(f.ready);
+  assert.deepEqual(pick(f, "priceSen"), [12000000, 13500000]); // harga satuan sebelum diskon
+  assert.deepEqual(pick(f, "discountSen"), [2000000, 1000000]);
+  assert.deepEqual(pick(f, "taxBaseSen"), [22000000, 12500000]);
+  assert.deepEqual(pick(f, "otherTaxBaseSen"), [20166667, 11458333]);
+  assert.deepEqual(pick(f, "vatSen"), [2420000, 1375000]);
+  assert.equal(f.totals.discountSen, 3000000);
+  assert.deepEqual(f.compared.map((c) => [c.label, c.want, c.diff]), [["DPP", 345000, 0], ["DPP Nilai Lain", 316250, 0], ["PPN", 37950, 0]]);
+  assert.ok(f.checks.some((c) => c.level === "info" && c.message.startsWith("Diskon 2 baris (total Rp 30.000) masuk ke faktur sebagai Potongan Harga")));
+});
+
+test("diskon di sebagian baris: baris tanpa diskon tetap dihitung dari harga termasuk PPN", () => {
+  // Baris 2 tanpa diskon: 90.000 termasuk PPN ÷ 1,11 × 3 = 243.243,24, seperti di template Excel.
+  // Sub Total 463.243,24 → 463.243; DPP 424.639,97 → 424.640; PPN 50.956,76 → 50.957
+  const inv = invoice([["SIKU", 2, "BTG", 120000, 220000, "10.000"], ["HOLLO", 3, "BTG", 81081, 243243]], { subTotal: 463243, dpp: 424640, ppn: 50957, total: 514200 });
+  const f = computeFaktur(inv, data);
+  assert.deepEqual(problems(f), []);
+  assert.deepEqual(pick(f, "unitInclusive"), [null, 90000]);
+  assert.deepEqual(pick(f, "discountSen"), [2000000, 0]);
+  assert.deepEqual(pick(f, "taxBaseSen"), [22000000, 24324324]);
+  assert.equal(f.choice, "template");
+  assert.ok(f.compared.every((c) => c.diff === 0));
+  assert.ok(f.checks.some((c) => c.level === "info" && c.message.startsWith("Diskon baris 1 (total Rp 20.000)")));
+});
+
+test("diskon di bawah invoice: dibagi ke semua baris, dengan peringatan karena belum ada contohnya", () => {
   // Diskon 10% per baris dan diskon invoice 18.000 dibagi menurut Jumlah
   const inv = invoice([["A", 2, "BTG", 100000, 180000, "10%"], ["B", 1, "BTG", 180000, 180000]], { discount: 18000 });
   const f = computeFaktur(inv, data);
   assert.deepEqual(pick(f, "priceSen"), [10000000, 18000000]);
   assert.deepEqual(pick(f, "discountSen"), [2900000, 900000]);
   assert.deepEqual(pick(f, "taxBaseSen"), [17100000, 17100000]);
-  assert.deepEqual(problems(f), ["Invoice ini berdiskon. Belum ada contoh invoice berdiskon, jadi cek lagi angka potongan harganya."]);
+  assert.deepEqual(problems(f), [
+    "Diskon di bawah invoice (Rp 18.000) dibagi ke semua baris menurut Jumlah. Belum ada contoh invoice seperti ini, jadi cek lagi potongan harganya di Coretax.",
+  ]);
   assert.ok(f.ready);
 });
 
@@ -234,4 +266,74 @@ test("XML: nama dan alamat pembeli pengganti, email '-', BOM dan CRLF", () => {
     assert.ok(xml.includes(part), part);
   }
   assert.throws(() => buildXml({ tin: NPWP, idtku: NPWP + "000000" }, [{ ...f, ready: false }]), /belum lengkap/);
+});
+
+const SELLER = { tin: NPWP, idtku: NPWP + "000000" };
+
+/** Faktur contoh untuk uji XML: harga termasuk PPN, diskon per unit, dan pilihan "DPP pas dengan Sub Total". */
+function sampleFakturs() {
+  return [
+    computeFaktur(invoice([["SIKU <A&B>", 3, "BTG", 81081, 243243]]), data),
+    computeFaktur({ ...invoice([["SIKU", 2, "BTG", 120000, 220000, "10.000"], ["STRIP", 1, "BTG", 135000, 125000, "10.000"]]), number: "J260000002" }, data),
+    computeFaktur({ ...invoice([["BESI A", 4, "BTG", 49550, 198198], ["BESI B", 3, "BTG", 81081, 243243]]), number: "J260000003" }, data),
+  ];
+}
+
+test("XML dibaca ulang: isi dan total tiap faktur sama dengan yang dihitung", () => {
+  const fakturs = sampleFakturs();
+  assert.equal(fakturs[2].choice, "subtotal");
+  const xml = buildXml(SELLER, fakturs);
+  const read = readXml(xml);
+  assert.equal(read.tin, NPWP);
+  assert.deepEqual(read.fakturs.map((x) => x.number), ["J260000001", "J260000002", "J260000003"]);
+  read.fakturs.forEach((x, i) => {
+    const f = fakturs[i];
+    assert.deepEqual([x.date, x.trxCode, x.buyerTin, x.buyerIdtku, x.sellerIdtku], [f.date, f.trxCode, f.buyer.npwp, f.buyer.nitku, SELLER.idtku]);
+    assert.deepEqual(x.totals, f.totals);
+    assert.deepEqual(
+      x.lines.map((l) => [l.name, l.code, l.unit, l.qty, l.priceSen, l.discountSen, l.taxBaseSen, l.otherTaxBaseSen, l.vatSen]),
+      f.lines.map((l) => [l.name, l.code, l.unit, l.qty, l.priceSen, l.discountSen, l.taxBaseSen, l.otherTaxBaseSen, l.vatSen]),
+    );
+  });
+  assert.deepEqual(verifyXml(xml, SELLER, fakturs), []);
+});
+
+test("pemeriksaan XML menemukan isi yang berbeda dari layar atau dari aturan Coretax", () => {
+  const fakturs = sampleFakturs();
+  const xml = buildXml(SELLER, fakturs);
+  const check = (changed) => verifyXml(changed, SELLER, fakturs);
+  assert.deepEqual(check(xml.replace("<VAT>26756.76</VAT>", "<VAT>26756.86</VAT>")), [
+    "J260000001: baris 1: PPN di XML tidak sama dengan di layar",
+    "J260000001: baris 1: PPN tidak sama dengan 12% × DPP Nilai Lain",
+    "J260000001: total faktur di XML tidak sama dengan rekap",
+  ]);
+  assert.deepEqual(check(xml.replace("<RefDesc>J260000002</RefDesc>", "<RefDesc>J260000001</RefDesc>")), [
+    "J260000001: nomor referensi muncul lebih dari sekali",
+    "J260000002: nomor referensi di XML tidak sama dengan di layar",
+  ]);
+  // Potongan Harga baris 1 invoice kedua (Rp 20.000) hilang
+  assert.deepEqual(check(xml.replace("<TotalDiscount>20000</TotalDiscount>", "<TotalDiscount>0</TotalDiscount>")), [
+    "J260000002: baris 1: Potongan Harga di XML tidak sama dengan di layar",
+    "J260000002: baris 1: DPP tidak sama dengan Harga × Qty − Potongan Harga",
+    "J260000002: total faktur di XML tidak sama dengan rekap",
+  ]);
+  assert.deepEqual(check(xml.replace(/<Unit>UM\.0021<\/Unit>/, "<Unit>Piece</Unit>")), [
+    "J260000001: baris 1: satuan harus kode UM.xxxx dan sama dengan di layar",
+  ]);
+  const firstInvoice = xml.split("<TaxInvoice>")[1];
+  assert.deepEqual(check(xml.replace(`<TaxInvoice>${firstInvoice}`, "")), ["XML berisi 2 faktur, seharusnya 3"]);
+  // NPWP penjual di Pengaturan berbeda dengan isi XML
+  assert.deepEqual(verifyXml(xml, { ...SELLER, tin: "0" + "5".repeat(15) }, fakturs), ["NPWP penjual di XML tidak sama dengan Pengaturan, atau bukan 16 angka"]);
+});
+
+test("karakter kontrol dari teks PDF dibuang dari XML, teks lain tetap utuh", () => {
+  const f = computeFaktur(invoice([["PIPA\u0007 HITAM", 1, "BTG", 100000, 100000]]), data);
+  const xml = buildXml(SELLER, [f]);
+  assert.ok(xml.includes("<Name>PIPA HITAM</Name>"));
+  assert.deepEqual(verifyXml(xml, SELLER, [f]), []);
+  // Huruf (termasuk F dan E), angka, tanda baca, dan huruf beraksen tidak boleh ikut terbuang
+  const text = 'FE fe EF PLAT 1/2" X 6M ÉÜ (A-Z), 0-9; :';
+  assert.equal(cleanText(text), text);
+  const chars = (...codes) => String.fromCharCode(...codes);
+  assert.equal(cleanText(`A${chars(0)}B${chars(0xfffe)}C${chars(0xffff)}D${chars(0x1f)}`), "ABCD");
 });

@@ -226,7 +226,10 @@ summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
   .pdf-view .dialog-box { height: 94vh; border-radius: 16px; }
 }
 .pdf-view header button.small { flex: none; }
-.pdf-body { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 16px; align-content: start; }
+.pdf-view header small { overflow-wrap: anywhere; }
+/* Baris grid seukuran isinya (kalau tidak, halaman PDF bisa ciut jadi 0 saat tabelnya panjang), kolom tidak melebihi layar */
+.pdf-body { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 16px; align-content: start; }
+.pdf-read { min-width: 0; }
 @media (min-width: 1000px) { .pdf-body { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); } }
 .pdf-pages { overflow-x: auto; min-width: 0; }
 .pdf-page { position: relative; margin: 0 0 12px; background: #fff; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25); container-type: inline-size; }

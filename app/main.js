@@ -475,7 +475,7 @@ function repeatBox(invoice, f) {
   }
   return h(
     "div",
-    { class: "repeat", role: "alert" },
+    { class: "repeat" },
     h("strong", {}, "Invoice ini sudah pernah dibuatkan XML"),
     h("p", {}, `${previous.file} · ${previous.exportedAt} · `, history),
     h("p", {}, "Kalau XML itu sudah diimpor ke Coretax, membuatnya lagi akan menerbitkan faktur ganda. Buat lagi hanya kalau XML sebelumnya gagal atau belum diimpor."),
@@ -946,7 +946,12 @@ async function copyRecap(rows) {
     ...rows.map((r, i) => [i + 1, r.number, dateText(r.date), r.buyerName, amount(r.taxBaseSen), ...(withDiscount ? [amount(r.discountSen ?? 0)] : []), amount(r.otherTaxBaseSen), amount(r.vatSen)]),
     ["", "Total", "", `${rows.length} faktur`, total("taxBaseSen"), ...(withDiscount ? [total("discountSen")] : []), total("otherTaxBaseSen"), total("vatSen")],
   ];
-  const text = table.map((cols) => cols.map((c) => String(c ?? "").replace(/\s+/g, " ").trim()).join("\t")).join("\r\n");
+  // Sel yang diawali = + - @ dijalankan Excel sebagai rumus saat ditempel; diberi tanda kutip supaya tetap teks
+  const cell = (c) => {
+    const s = String(c ?? "").replace(/\s+/g, " ").trim();
+    return /^[=+\-@]/.test(s) && !/^-?\d+$/.test(s) ? `'${s}` : s;
+  };
+  const text = table.map((cols) => cols.map(cell).join("\t")).join("\r\n");
   try {
     await navigator.clipboard.writeText(text);
     toast("Rekap disalin. Tempel di Excel atau chat.", "ok");

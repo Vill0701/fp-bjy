@@ -10,9 +10,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { computeFaktur, nameKey } from "../src/calc.js";
+import { compareCoretax, readCoretaxFakturs } from "../src/coretax-pdf.js";
 import { parseInvoices } from "../src/parser.js";
 import { extractPages } from "../src/pdf-text.js";
-import { DEFAULT_UNITS, UNIT_NAMES } from "../src/satuan.js";
+import { DEFAULT_UNITS } from "../src/satuan.js";
 import { buildXml, verifyXml } from "../src/xml.js";
 
 const root = fileURLToPath(new URL("../contoh/", import.meta.url));
@@ -26,61 +27,6 @@ function* walk(dir) {
     if (statSync(path).isDirectory()) yield* walk(path);
     else yield path;
   }
-}
-
-/** "81.081,08" → 8108108 sen */
-const senOf = (text) => Math.round(Number(text.replace(/\./g, "").replace(",", ".")) * 100);
-
-/** Baris teks per halaman: potongan teks yang sejajar digabung dengan spasi. */
-function textLines(pages) {
-  const out = [];
-  for (const page of pages) {
-    const lines = [];
-    for (const it of [...page.items].sort((a, b) => a.y - b.y || a.x - b.x)) {
-      const last = lines.at(-1);
-      if (last && it.y - last.y <= 1.5) last.items.push(it);
-      else lines.push({ y: it.y, items: [it] });
-    }
-    out.push(...lines.map((l) => l.items.sort((a, b) => a.x - b.x).map((it) => it.str).join(" ")));
-  }
-  return out;
-}
-
-const unitCodes = Object.fromEntries(Object.entries(UNIT_NAMES).map(([code, name]) => [name, code]));
-
-/** Isi satu faktur pajak Coretax (baris-baris teksnya): baris barang dan total. */
-function readCoretaxFaktur(lines, ref) {
-  const goods = [];
-  lines.forEach((line, i) => {
-    const m = /^Rp ([\d.,]+) x ([\d.,]+) (.+)$/.exec(line);
-    if (!m) return;
-    const [, no, code, taxBase] = /^(\d+) (\d{6}) ([\d.,]+)$/.exec(lines[i + 1]);
-    goods.push({ no: Number(no), name: lines[i - 1], priceSen: senOf(m[1]), qty: senOf(m[2]) / 100, unit: unitCodes[m[3]], code, taxBaseSen: senOf(taxBase) });
-  });
-  const total = (label) => senOf(lines.find((l) => l.startsWith(label)).slice(label.length).trim());
-  return {
-    ref,
-    text: lines.join("\n"),
-    goods,
-    taxBaseSen: total("Harga Jual / Penggantian / Uang Muka / Termin"),
-    otherTaxBaseSen: total("Dasar Pengenaan Pajak"),
-    vatSen: total("Jumlah PPN (Pajak Pertambahan Nilai)"),
-  };
-}
-
-/** Faktur pajak Coretax di sebuah PDF (bisa beberapa); tiap faktur diakhiri baris "(Referensi: …)". */
-function readCoretaxFakturs(pages) {
-  const lines = textLines(pages);
-  if (!lines.some((l) => l.startsWith("Kode dan Nomor Seri Faktur Pajak"))) return [];
-  const fakturs = [];
-  let start = 0;
-  lines.forEach((line, i) => {
-    const ref = /\(Referensi: (.+)\)/.exec(line)?.[1];
-    if (!ref) return;
-    fakturs.push(readCoretaxFaktur(lines.slice(start, i + 1), ref));
-    start = i + 1;
-  });
-  return fakturs;
 }
 
 // Semua PDF di contoh/: invoice dan faktur pajak Coretax.
@@ -115,19 +61,15 @@ test("invoice sama dengan faktur Coretax yang sudah terbit, baris demi baris", {
     const f = computeFaktur(invoices.get(ref)[0].invoice, data);
     assert.deepEqual(problems(f), [], ref);
     assert.ok(f.ready, ref);
-    assert.deepEqual(
-      f.lines.map((l, i) => ({ no: i + 1, name: l.name, priceSen: l.priceSen, qty: l.qty, unit: l.unit, code: l.code, taxBaseSen: l.taxBaseSen })),
-      want.goods,
-      ref,
-    );
-    // Total di faktur Coretax dibulatkan ke rupiah.
-    const rp = (sen) => Math.round(sen / 100) * 100;
-    assert.deepEqual(
-      [rp(f.totals.taxBaseSen), rp(f.totals.otherTaxBaseSen), rp(f.totals.vatSen)],
-      [want.taxBaseSen, want.otherTaxBaseSen, want.vatSen],
-      ref,
-    );
-    assert.ok(want.text.includes(`#${f.buyer.nitku}`), `${ref}: NITKU pembeli beda dengan faktur`);
+    // Yang dicocokkan aplikasi: NPWP dan NITKU pembeli, tiap baris barang, dan total (dibulatkan ke rupiah di Coretax)
+    const rows = compareCoretax(want, { npwp: f.buyer.npwp, nitku: f.buyer.nitku, totals: f.totals, lines: f.lines });
+    assert.deepEqual(rows.filter((r) => !r.ok), [], ref);
+    assert.equal(rows.length, 6 + 1 + 7 * f.lines.length, ref);
+    assert.deepEqual(want.goods.map((g) => g.no), f.lines.map((_, i) => i + 1), ref);
+    assert.match(want.number, /^[0-9]{17}$/, ref);
+    assert.ok(want.buyerName, ref);
+    // Dari Riwayat hanya total yang tersimpan: tetap bisa dicocokkan
+    assert.ok(compareCoretax(want, { totals: f.totals }).every((r) => r.ok), ref);
   }
 });
 

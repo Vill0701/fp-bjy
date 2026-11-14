@@ -378,3 +378,59 @@ summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 }
 .toast.error { background: var(--error); }
 .toast.ok { background: var(--ok); }
+
+/* Cocokkan dengan faktur Coretax */
+.coretax h2 { font-size: 1.15rem; margin: 0; }
+.match { border-top: 1px solid var(--line); padding: 10px 0 4px; }
+.match > header { display: flex; align-items: flex-start; gap: 8px; }
+.match > header > div { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.match > header small { color: var(--muted); overflow-wrap: anywhere; }
+.match p { margin: 4px 0; }
+.match-diffs { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 0.9rem; font-variant-numeric: tabular-nums; background: var(--error-bg); border-radius: 8px; }
+.match-diffs th, .match-diffs td { padding: 5px 8px; text-align: right; vertical-align: top; overflow-wrap: anywhere; }
+.match-diffs thead th { color: var(--muted); font-size: 0.78rem; }
+.match-diffs tbody th { text-align: left; font-weight: 400; }
+
+/* Saringan status di atas daftar */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.chip { background: #fff; color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; min-height: 36px; font-weight: 500; font-size: 0.9rem; }
+.chip:hover { background: var(--bg); }
+.chip.ok strong { color: var(--ok); }
+.chip.warn strong { color: var(--warn); }
+.chip.error strong { color: var(--error); }
+.chip.active, .chip.active:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
+.chip.active strong { color: #fff; }
+
+/* Kartu yang sudah siap dilipat jadi satu baris */
+.invoice > header button.toggle { padding: 2px 6px 2px 0; font-size: 1rem; color: var(--text); }
+.invoice.folded { padding-top: 10px; padding-bottom: 10px; }
+
+.notice.backup { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.notice.backup button.link { color: inherit; padding: 0; }
+.version { margin-top: 16px; }
+.export-bar > span small { display: block; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Seret PDF ke jendela aplikasi */
+body.dragging::after {
+  content: "Lepas PDF di sini";
+  position: fixed;
+  inset: 12px;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  border: 3px dashed var(--primary);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--primary);
+  font-size: 1.3rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* Lihat PDF: bagian yang bermasalah menurut pemeriksaan */
+.pdf-mark.bad { background: rgba(214, 40, 30, 0.22); outline-color: rgba(179, 38, 30, 0.85); }
+.pdf-mark.bad span { background: var(--error); }
+.read-table tr.bad td, .read-table tr.bad th, .read-head dd.bad { background: var(--error-bg); color: var(--error); }
+.read-table tr.bad .line-no { background: var(--error); }
+.bad-note { color: var(--error); font-size: 0.88rem; margin: 0 0 8px; }
+.export-bar button { white-space: nowrap; }

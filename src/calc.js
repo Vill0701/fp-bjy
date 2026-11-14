@@ -126,7 +126,12 @@ function discountColumnMatches(line, lineDiscSen) {
 export function computeFaktur(invoice, data, settings = {}) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
   const checks = [];
-  const check = (level, message) => checks.push({ level, message });
+  // Bagian invoice yang bermasalah, untuk diberi tanda merah di Lihat PDF: indeks baris, kunci ringkasan, kunci kop
+  const flags = { lines: new Set(), summary: new Set(), header: new Set() };
+  const check = (level, message, flag) => {
+    checks.push({ level, message });
+    for (const [kind, value] of Object.entries(flag ?? {})) flags[kind].add(value);
+  };
   const sum = { subTotal: 0, discount: 0, ppn: 0, total: 0, ...invoice.summary };
   const lines = invoice.lines;
 
@@ -136,7 +141,7 @@ export function computeFaktur(invoice, data, settings = {}) {
   if (s.sellerName && invoice.seller && nameKey(invoice.seller) !== nameKey(s.sellerName)) {
     check("error", `Invoice ini dari ${invoice.seller}, bukan ${s.sellerName}. Kalau nama penjualnya memang berubah, ganti di Pengaturan.`);
   }
-  if (!invoice.date) check("error", "Tanggal invoice tidak terbaca");
+  if (!invoice.date) check("error", "Tanggal invoice tidak terbaca", { header: "date" });
   if (!invoice.summary) check("error", "Ringkasan (Sub Total, PPN, Total) tidak ditemukan");
   if (!lines.length) check("error", "Tidak ada baris barang yang terbaca");
 
@@ -152,22 +157,25 @@ export function computeFaktur(invoice, data, settings = {}) {
     else if (Math.abs(diffSen) <= roundingSen) {
       check("info", `Jumlah semua baris (${rupiah(linesTotal)}) selisih ${rupiah(Math.abs(diffSen))} dari Sub Total (${rupiah(toSen(sum.subTotal))}) karena pembulatan di invoice. Invoice tidak perlu diedit.`);
     } else {
-      check("error", `Jumlah semua baris (${rupiah(linesTotal)}) tidak sama dengan Sub Total (${rupiah(toSen(sum.subTotal))})`);
+      check("error", `Jumlah semua baris (${rupiah(linesTotal)}) tidak sama dengan Sub Total (${rupiah(toSen(sum.subTotal))})`, { summary: "subTotal" });
     }
   }
 
   // 3. Qty × Harga = Jumlah, kecuali selisih karena Harga dibulatkan ke rupiah, atau ada diskon per baris
   for (const l of lines) {
-    if (l.qty == null || l.price == null || l.total == null) continue; // sudah diperingatkan saat membaca PDF
+    if (l.qty == null || l.price == null || l.total == null) {
+      flags.lines.add(l.no - 1); // sudah diperingatkan saat membaca PDF
+      continue;
+    }
     const grossSen = Math.round(l.qty * l.price * 100);
     const diffSen = grossSen - toSen(l.total);
     if (l.disc.trim()) {
-      if (diffSen < 0) check("error", `Baris ${l.no}: Jumlah lebih besar dari Qty × Harga`);
+      if (diffSen < 0) check("error", `Baris ${l.no}: Jumlah lebih besar dari Qty × Harga`, { lines: l.no - 1 });
       else if (!discountColumnMatches(l, diffSen)) {
-        check("warn", `Baris ${l.no}: kolom Disc (${l.disc}) tidak cocok dengan selisih harga (${rupiah(diffSen)})`);
+        check("warn", `Baris ${l.no}: kolom Disc (${l.disc}) tidak cocok dengan selisih harga (${rupiah(diffSen)})`, { lines: l.no - 1 });
       }
     } else if (Math.abs(diffSen) > Math.ceil(l.qty * 50) + 50) {
-      check("warn", `Baris ${l.no}: Qty × Harga (${rupiah(grossSen)}) tidak sama dengan Jumlah (${rupiah(toSen(l.total))})`);
+      check("warn", `Baris ${l.no}: Qty × Harga (${rupiah(grossSen)}) tidak sama dengan Jumlah (${rupiah(toSen(l.total))})`, { lines: l.no - 1 });
     }
   }
 
@@ -180,12 +188,12 @@ export function computeFaktur(invoice, data, settings = {}) {
   const hasDiscount = invoiceDiscount || lineDiscounted.includes(true);
   if (mode === "exclusive") check("ok", "Harga di invoice belum termasuk PPN (PPN = 11% × Sub Total)");
   else if (mode === "inclusive") check("info", "Harga di invoice sudah termasuk PPN");
-  else if (invoice.summary) check("error", "PPN di invoice tidak cocok dengan rumus harga belum maupun sudah termasuk PPN, perlu dicek manual");
+  else if (invoice.summary) check("error", "PPN di invoice tidak cocok dengan rumus harga belum maupun sudah termasuk PPN, perlu dicek manual", { summary: "ppn" });
   if (mode === "inclusive" && hasDiscount) check("error", "Invoice dengan harga termasuk PPN dan diskon belum didukung. Buat fakturnya manual.");
   if (invoice.summary) {
     const expectedTotal = sum.subTotal - sum.discount + (mode === "inclusive" ? 0 : sum.ppn);
     if (Math.abs(expectedTotal - sum.total) > 1) {
-      check("warn", `Total invoice (${rupiah(toSen(sum.total))}) tidak sama dengan perhitungan (${rupiah(toSen(expectedTotal))})`);
+      check("warn", `Total invoice (${rupiah(toSen(sum.total))}) tidak sama dengan perhitungan (${rupiah(toSen(expectedTotal))})`, { summary: "total" });
     }
   }
 
@@ -308,7 +316,8 @@ export function computeFaktur(invoice, data, settings = {}) {
       check("ok", `${listed} faktur sama dengan invoice (setelah dibulatkan ke rupiah)`);
     }
     for (const c of compared.filter((c) => c.diff)) {
-      check(Math.abs(c.diff) <= 1 ? "info" : "warn", `${c.label} faktur ${rupiah(c.sen)}, beda ${rupiah(c.diff * 100)} dari invoice (${rupiah(c.want * 100)})`);
+      check(Math.abs(c.diff) <= 1 ? "info" : "warn", `${c.label} faktur ${rupiah(c.sen)}, beda ${rupiah(c.diff * 100)} dari invoice (${rupiah(c.want * 100)})`,
+        Math.abs(c.diff) <= 1 ? undefined : { summary: { DPP: "subTotal", "DPP Nilai Lain": "dpp", PPN: "ppn" }[c.label] });
     }
   }
 
@@ -318,8 +327,8 @@ export function computeFaktur(invoice, data, settings = {}) {
   const npwp = normalizeNpwp(rawNpwp);
   const nitku = npwp && normalizeNitku(override.nitku, npwp);
   const buyer = npwp && !/^0+$/.test(npwp) && nitku ? { npwp, nitku } : null;
-  if (!rawNpwp) check("error", "NPWP pembeli tidak ada di invoice. Isi manual.");
-  else if (!buyer) check("error", `NPWP pembeli di invoice tidak valid ("${rawNpwp}"). Isi manual.`);
+  if (!rawNpwp) check("error", "NPWP pembeli tidak ada di invoice. Isi manual.", { header: "npwp" });
+  else if (!buyer) check("error", `NPWP pembeli di invoice tidak valid ("${rawNpwp}"). Isi manual.`, { header: "npwp" });
   const noCode = fakturLines.filter((l) => !/^\d{6}$/.test(l.code)).length;
   const noUnit = fakturLines.filter((l) => !/^UM\.\d{4}$/.test(l.unit)).length;
   if (noCode) check("error", `Kode barang Coretax belum diisi untuk ${noCode} baris`);
@@ -338,6 +347,7 @@ export function computeFaktur(invoice, data, settings = {}) {
     choice: chosen.key,
     options: showOptions ? variants.map(({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine }) => ({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine })) : [],
     checks,
+    flags: { lines: [...flags.lines], summary: [...flags.summary], header: [...flags.header] },
     ready: !checks.some((c) => c.level === "error"),
   };
 }

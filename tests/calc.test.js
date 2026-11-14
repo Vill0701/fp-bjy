@@ -337,3 +337,13 @@ test("karakter kontrol dari teks PDF dibuang dari XML, teks lain tetap utuh", ()
   const chars = (...codes) => String.fromCharCode(...codes);
   assert.equal(cleanText(`A${chars(0)}B${chars(0xfffe)}C${chars(0xffff)}D${chars(0x1f)}`), "ABCD");
 });
+
+test("bagian invoice yang bermasalah ditandai untuk Lihat PDF", () => {
+  const good = computeFaktur(invoice([["A", 1, "BTG", 100000, 100000]]), data);
+  assert.deepEqual(good.flags, { lines: [], summary: [], header: [] });
+  // Baris 2: Qty × Harga jauh dari Jumlah; NPWP tidak ada; Jumlah baris tidak sama dengan Sub Total
+  const bad = computeFaktur(invoice([["A", 1, "BTG", 100000, 100000], ["B", 3, "BTG", 100000, 290000]], { subTotal: 500000 }, { buyerNpwp: "" }), data);
+  assert.deepEqual(bad.flags.lines, [1]);
+  assert.ok(bad.flags.summary.includes("subTotal"));
+  assert.deepEqual(bad.flags.header, ["npwp"]);
+});

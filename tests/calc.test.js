@@ -347,3 +347,46 @@ test("bagian invoice yang bermasalah ditandai untuk Lihat PDF", () => {
   assert.ok(bad.flags.summary.includes("subTotal"));
   assert.deepEqual(bad.flags.header, ["npwp"]);
 });
+
+test("baris yang tidak terbaca lengkap menahan faktur; setelah dihapus faktur siap, nomor baris tetap seperti invoice", () => {
+  // Baris 2: catatan yang terbaca sebagai barang, tanpa Qty, Harga, dan Jumlah
+  const base = invoice([["A", 1, "BTG", 100000, 100000], ["B", 1, "BTG", 50000, 50000]]);
+  const weird = { no: 2, name: "", qty: null, unit: "", price: null, disc: "", total: null, issues: ["Qty kosong", 'Harga berisi "TITIP", bukan angka', "Jumlah kosong"] };
+  const inv = { ...base, lines: [base.lines[0], weird, { ...base.lines[1], no: 3 }] };
+  const f = computeFaktur(inv, data);
+  assert.equal(f.ready, false);
+  assert.ok(f.checks.some((c) => c.level === "error" && c.message === 'Baris 2 tidak terbaca lengkap (Qty kosong; Harga berisi "TITIP", bukan angka; Jumlah kosong). Kalau ini bukan barang, hapus baris ini.'));
+  assert.deepEqual(f.flags.lines, [1]);
+  assert.deepEqual(f.lines.map((l) => l.incomplete), [false, true, false]);
+  // Satuannya juga kosong, tapi tidak diminta diisi: baris ini sudah ditahan dan pilihannya dihapus
+  assert.ok(!f.checks.some((c) => /Satuan Coretax belum diisi/.test(c.message)));
+  assert.deepEqual(f.removed, []);
+
+  // Dihapus: faktur siap, baris faktur tetap bernomor 1 dan 3 seperti di invoice
+  const g = computeFaktur({ ...inv, removed: [2] }, data);
+  assert.deepEqual(problems(g), []);
+  assert.ok(g.ready);
+  assert.deepEqual(g.lines.map((l) => l.no), [1, 3]);
+  assert.deepEqual(g.removed, [2]);
+  assert.ok(g.checks.some((c) => c.level === "info" && c.message === "Baris 2 dihapus dari faktur atas pilihanmu"));
+
+  // Pesan diskon menyebut nomor baris invoice, bukan urutan setelah ada yang dihapus
+  const disc = { ...base.lines[1], no: 3, price: 60000, disc: "10000", total: 50000 };
+  const d = computeFaktur({ ...base, summary: { ...base.summary }, lines: [base.lines[0], weird, disc], removed: [2] }, data);
+  assert.ok(d.checks.some((c) => /^Diskon baris 3 /.test(c.message)), d.checks.map((c) => c.message).join("\n"));
+
+  // Yang terhapus ternyata barang asli: ketahuan karena Jumlah baris tidak lagi sama dengan Sub Total
+  const h = computeFaktur({ ...inv, removed: [2, 3] }, data);
+  assert.equal(h.ready, false);
+  assert.ok(problems(h).some((m) => /tidak sama dengan Sub Total/.test(m)));
+
+  // Catatan label LUNAS dari pembaca PDF hanya info, tidak menahan faktur
+  const n = computeFaktur({ ...base, notes: ['Tulisan "LUNAS" di tabel diabaikan: itu label, bukan barang'] }, data);
+  assert.ok(n.ready);
+  assert.ok(n.checks.some((c) => c.level === "info" && /LUNAS/.test(c.message)));
+
+  // Baris yang terbaca lengkap tapi punya catatan (mis. nama dua baris) cukup diperingatkan
+  const w = computeFaktur({ ...base, lines: [{ ...base.lines[0], issues: ["nama barang tertulis lebih dari satu baris, cek apakah sudah benar"] }, base.lines[1]] }, data);
+  assert.deepEqual(problems(w), ['Baris 1 "A": nama barang tertulis lebih dari satu baris, cek apakah sudah benar']);
+  assert.ok(w.ready);
+});

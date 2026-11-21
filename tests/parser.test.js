@@ -11,7 +11,8 @@ const NPWP = "0" + "1".repeat(15);
  */
 function page(number, { scale = 1, dx = 0, rows, summary, extra = [], ...head }) {
   const items = [];
-  const put = (x, y, str, w = str.length * 3.6) => items.push({ str, x: dx + x * scale, y: y * scale, w: w * scale });
+  // Teks kosong tidak pernah ada di hasil baca PDF (pdf-text.js membuangnya)
+  const put = (x, y, str, w = str.length * 3.6) => str && items.push({ str, x: dx + x * scale, y: y * scale, w: w * scale });
   const right = (edge, y, str) => put(edge - str.length * 3.6, y, str);
   const middle = (mid, y, str) => put(mid - (str.length * 3.6) / 2, y, str);
   const labelled = (x, y, label, value) => {
@@ -162,9 +163,54 @@ test("nama yang turun ke baris lain disambung ke baris barang terdekat, dengan p
   const inv = parseInvoices([page(1, { number: "J260000004", rows, summary: SUMMARY, extra: [[64, 165.0, "PIPA BESI UKURAN"]] })]).invoices[0];
   assert.equal(inv.lines.length, 1);
   assert.equal(inv.lines[0].name, "PIPA BESI UKURAN PANJANG SEKALI");
-  assert.match(inv.warnings.join("\n"), /lebih dari satu baris/);
+  // Peringatannya ikut baris barang itu (hilang kalau barisnya dihapus dari faktur)
+  assert.deepEqual(inv.warnings, []);
+  assert.deepEqual(inv.lines[0].issues, ["nama barang tertulis lebih dari satu baris, cek apakah sudah benar"]);
   // Tanda di PDF menutupi kedua baris teks nama itu
   assert.ok(inv.marks.lines[0].top < 165 && inv.marks.lines[0].bottom > 171.3);
+});
+
+test("label LUNAS di area tabel tidak terbaca sebagai barang, di posisi mana pun", () => {
+  const clean = parseInvoices([page(1, { number: "J260000006", rows: ROWS, summary: SUMMARY })]).invoices[0];
+  const read = (extra) => parseInvoices([page(1, { number: "J260000006", rows: ROWS, summary: SUMMARY, extra })]).invoices[0];
+  const cases = {
+    "besar di tengah tabel (kolom Qty sampai Jumlah)": [[300, 215, "LUNAS"]],
+    "di kolom Nama Barang, baris sendiri": [[64, 200, "LUNAS"]],
+    "di kolom Disc, sebaris dengan barang": [[384, 171.3, "LUNAS"]],
+    "di kolom Jumlah, sebaris dengan barang": [[480, 181.1, "Lunas"]],
+    "huruf terpisah": [[300, 220, "L"], [310, 220, "U"], [320, 220, "N"], [330, 220, "A"], [340, 220, "S"]],
+    "dengan tanggal": [[300, 230, "LUNAS 19/11/2026"]],
+    "BELUM LUNAS": [[64, 240, "BELUM LUNAS"]],
+  };
+  for (const [where, extra] of Object.entries(cases)) {
+    const inv = read(extra);
+    // Baris barang dan nilainya sama persis dengan invoice tanpa label
+    assert.deepEqual(inv.lines, clean.lines, where);
+    assert.deepEqual(inv.warnings, [], where);
+    assert.equal(inv.notes.length, 1, where);
+    assert.match(inv.notes[0], /di tabel diabaikan: itu label, bukan barang/, where);
+  }
+  assert.deepEqual(clean.notes, []);
+  // Tulisan lain yang bukan label tetap terbaca (dan diperingatkan), tidak ikut terbuang
+  const other = read([[300, 215, "LUNAS TGL 19/11"]]);
+  assert.equal(other.lines.length, clean.lines.length + 1);
+  assert.deepEqual(other.notes, []);
+});
+
+test("baris yang tidak terbaca lengkap mencatat masalahnya di baris itu", () => {
+  const inv = parseInvoices([page(1, { number: "J260000007", rows: ROWS, summary: SUMMARY, extra: [[300, 215, "TITIP"]] })]).invoices[0];
+  assert.equal(inv.lines.length, 3);
+  const weird = inv.lines[2];
+  assert.deepEqual([weird.no, weird.name, weird.qty, weird.price, weird.total], [3, "", null, null, null]);
+  // "TITIP" jatuh di kolom Harga
+  assert.deepEqual(weird.issues, ["Qty kosong", 'Harga berisi "TITIP", bukan angka', "Jumlah kosong"]);
+  assert.deepEqual(inv.warnings, []);
+  assert.equal(inv.lines[0].issues, undefined); // baris yang normal tidak punya catatan masalah
+
+  // Angka terbaca tapi satuannya tidak ada, dan Qty berisi teks
+  const rows = [["BARANG TANPA SATUAN", "2", "", "50.000", "", "100.000"], ["BARANG ANEH", "DUA", "", "50.000", "", "100.000"]];
+  const odd = parseInvoices([page(1, { number: "J260000008", rows, summary: SUMMARY })]).invoices[0];
+  assert.deepEqual(odd.lines.map((l) => l.issues), [["satuan kosong"], ['Qty berisi "DUA", bukan angka']]);
 });
 
 test("kolom Disc dan invoice tanpa NPWP", () => {

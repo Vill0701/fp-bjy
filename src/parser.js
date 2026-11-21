@@ -37,6 +37,13 @@ const sameLine = (a, b) => Math.abs(a.y - b.y) <= TOL;
 const center = (it) => it.x + it.w / 2;
 const labelOf = (it) => it.str.replace(/\s*:$/, ""); // "TOTAL :" → "TOTAL"
 const isRule = (it) => /^=+$/.test(it.str); // garis "=====" pembatas tabel
+
+/**
+ * Label status pembayaran yang kadang ditulis di invoice, mis. "LUNAS", "BELUM LUNAS", "L U N A S", atau
+ * "LUNAS 19/11/2026". Kalau jatuh di area tabel, label itu bukan barang dan diabaikan.
+ */
+const STAMP = /^[^A-Z]*((SUDAH|BELUM)[\s]*)?L[\s]*U[\s]*N[\s]*A[\s]*S(?![A-Z])[^A-Z]*$/i;
+export const isStamp = (text) => STAMP.test(String(text ?? "").trim());
 const valueText = (it) => (it ? it.str.replace(/^:\s*/, "") : "");
 
 /** Teks terdekat di kanan label pada baris yang sama, melewati tanda ":". */
@@ -107,17 +114,25 @@ function splitQtyUnit(tokens) {
   };
 }
 
-function parseRows(items, header, bottomY, warnings) {
-  const body = items
-    .filter((it) => !isRule(it) && it.y > header.y + TOL && it.y < bottomY - TOL)
-    .sort((a, b) => a.y - b.y || a.x - b.x);
+function parseRows(items, header, bottomY, warnings, notes) {
+  const inTable = items.filter((it) => !isRule(it) && it.y > header.y + TOL && it.y < bottomY - TOL);
+  const stamps = new Set(inTable.filter((it) => isStamp(it.str)).map((it) => it.str.trim()));
+  const body = inTable.filter((it) => !isStamp(it.str)).sort((a, b) => a.y - b.y || a.x - b.x);
 
-  const lines = [];
+  const grouped = [];
   for (const it of body) {
-    const last = lines.at(-1);
+    const last = grouped.at(-1);
     if (last && it.y - last.y <= TOL) last.items.push(it);
-    else lines.push({ y: it.y, items: [it] });
+    else grouped.push({ y: it.y, items: [it] });
   }
+  // Label yang hurufnya terpisah-pisah ("L U N A S") memenuhi satu baris sendiri
+  const lines = grouped.filter((line) => {
+    const text = line.items.map((it) => it.str).join("");
+    if (!isStamp(text)) return true;
+    stamps.add(line.items.map((it) => it.str).join(" "));
+    return false;
+  });
+  if (stamps.size) notes.push(`Tulisan ${[...stamps].map((s) => `"${s}"`).join(", ")} di tabel diabaikan: itu label, bukan barang`);
 
   const bounds = columnBounds(header.cols);
   const rows = [];
@@ -144,10 +159,15 @@ function parseRows(items, header, bottomY, warnings) {
       disc: text("disc").replace(/^-$/, ""),
       total: parseNumber(text("total")),
     };
+    // Masalah per baris dicatat di barisnya, supaya hilang kalau baris itu dihapus dari faktur
+    const issues = [];
     for (const [key, label, cell] of [["qty", "Qty", "qtyUnit"], ["price", "Harga", "price"], ["total", "Jumlah", "total"]]) {
-      if (row[key] == null) warnings.push(`baris "${row.name}": kolom ${label} tidak terbaca ("${text(cell)}")`);
+      if (row[key] != null) continue;
+      const raw = text(cell).trim();
+      issues.push(raw ? `${label} berisi "${raw}", bukan angka` : `${label} kosong`);
     }
-    if (!row.unit) warnings.push(`baris "${row.name}": satuan tidak terbaca`);
+    if (row.qty != null && !row.unit) issues.push("satuan kosong");
+    if (issues.length) row.issues = issues;
     rows.push(row);
   }
 
@@ -165,7 +185,7 @@ function parseRows(items, header, bottomY, warnings) {
     }
     best.row.name = best.row.y > part.y ? `${part.text} ${best.row.name}` : `${best.row.name} ${part.text}`;
     best.row.box = mergeBoxes(best.row.box, part.box);
-    warnings.push(`nama barang "${best.row.name}" tertulis lebih dari satu baris, cek apakah sudah benar`);
+    best.row.issues = [...(best.row.issues ?? []), "nama barang tertulis lebih dari satu baris, cek apakah sudah benar"];
   }
   return rows;
 }
@@ -209,6 +229,7 @@ function parsePage(page) {
   const { items } = page;
   const find = (text) => items.find((it) => labelOf(it) === text) ?? null;
   const warnings = [];
+  const notes = []; // info, bukan masalah (mis. label LUNAS yang diabaikan)
   const header = findTableHeader(items);
   if (!header) warnings.push("judul kolom tabel (QTY, HARGA, DISC, JUMLAH) tidak ditemukan");
 
@@ -244,10 +265,11 @@ function parsePage(page) {
     buyerCode: named?.[1] ?? "",
     buyerName: named?.[2] ?? customer,
     buyerNpwp: findNpwp(items, customerLabel?.y ?? 0, header?.y ?? Infinity, marks.header),
-    rows: header ? parseRows(items, header, subTotalLabel?.y ?? Infinity, warnings) : [],
+    rows: header ? parseRows(items, header, subTotalLabel?.y ?? Infinity, warnings, notes) : [],
     summary: header ? parseSummary(items, header.y, marks.summary) : null,
     marks,
     warnings,
+    notes,
   };
 }
 
@@ -274,7 +296,7 @@ export function parseInvoices(pages) {
   for (const [number, parts] of groups) {
     const { date, seller, buyerCode, buyerName, buyerNpwp } = parts[0];
     const marks = { header: onPage(parts[0].page, parts[0].marks.header), lines: [], summary: {} };
-    const invoice = { number, date, seller, buyerCode, buyerName, buyerNpwp, pages: [], lines: [], summary: null, warnings: [], marks };
+    const invoice = { number, date, seller, buyerCode, buyerName, buyerNpwp, pages: [], lines: [], summary: null, warnings: [], notes: [], marks };
     for (const part of parts) {
       const where = parts.length > 1 ? `Hal. ${part.page}: ` : "";
       invoice.pages.push(part.page);
@@ -288,6 +310,7 @@ export function parseInvoices(pages) {
         marks.summary = onPage(part.page, part.marks.summary);
       }
       invoice.warnings.push(...part.warnings.map((w) => where + w));
+      invoice.notes.push(...part.notes.map((n) => where + n));
     }
     invoice.lines.forEach((line, i) => {
       line.no = i + 1;

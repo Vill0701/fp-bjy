@@ -172,6 +172,19 @@ summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 .line-inputs button { padding: 8px 10px; }
 .code-field { display: flex; gap: 8px; }
 
+/* Baris yang tidak terbaca lengkap atau bermasalah, tombol hapus baris, dan baris yang sudah dihapus */
+.line.bad { background: var(--error-bg); padding-left: 6px; padding-right: 6px; border-radius: 6px; }
+.line-name > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.line-remove { flex: none; align-self: flex-start; }
+button.link.line-remove { padding: 2px 0; color: var(--muted); font-weight: 400; font-size: 0.85rem; }
+.line-issue { color: var(--error); font-size: 0.88rem; margin: 2px 0 4px calc(1.6em + 8px); }
+.removed-lines { border-top: 1px dashed var(--line); margin-top: 4px; padding-top: 6px; color: var(--muted); font-size: 0.9rem; }
+.removed-lines > strong { display: block; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.removed-lines > div { display: flex; gap: 8px; align-items: baseline; }
+.removed-lines .no { min-width: 1.6em; text-align: right; }
+.removed-lines > div > span:nth-child(2) { flex: 1; min-width: 0; text-decoration: line-through; overflow-wrap: anywhere; }
+.removed-lines button.link { padding: 4px 0; flex: none; }
+
 .dialog {
   position: fixed;
   inset: 0;
@@ -433,4 +446,10 @@ body.dragging::after {
 .read-table tr.bad td, .read-table tr.bad th, .read-head dd.bad { background: var(--error-bg); color: var(--error); }
 .read-table tr.bad .line-no { background: var(--error); }
 .bad-note { color: var(--error); font-size: 0.88rem; margin: 0 0 8px; }
+.pdf-mark.removed { background: rgba(91, 100, 117, 0.16); outline: 1px dashed rgba(91, 100, 117, 0.8); }
+.pdf-mark.removed span { background: var(--muted); }
+.read-table tr.removed td { color: var(--muted); }
+.read-table tr.removed td + td { text-decoration: line-through; }
+.read-table tr.removed .line-no { background: var(--muted); }
+.read-table .removed-tag { display: inline-block; margin-left: 6px; text-decoration: none; font-style: italic; }
 .export-bar button { white-space: nowrap; }

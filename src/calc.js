@@ -133,9 +133,24 @@ export function computeFaktur(invoice, data, settings = {}) {
     for (const [kind, value] of Object.entries(flag ?? {})) flags[kind].add(value);
   };
   const sum = { subTotal: 0, discount: 0, ppn: 0, total: 0, ...invoice.summary };
-  const lines = invoice.lines;
+  // Baris yang dihapus pengguna (mis. catatan yang terbaca sebagai barang) tidak ikut faktur. Nomor baris (l.no)
+  // tetap nomor di invoice. Kalau yang dihapus ternyata barang, Jumlah baris tidak lagi sama dengan Sub Total.
+  const removed = new Set(invoice.removed ?? []);
+  const lines = invoice.lines.filter((l) => !removed.has(l.no));
+  const lineLabel = (l) => `Baris ${l.no}${l.name ? ` "${l.name}"` : ""}`;
 
   for (const w of invoice.warnings) check("warn", w);
+  for (const note of invoice.notes ?? []) check("info", note);
+  for (const l of invoice.lines) if (removed.has(l.no)) check("info", `${lineLabel(l)} dihapus dari faktur atas pilihanmu`);
+  for (const l of lines) {
+    // Baris yang tidak terbaca lengkap tidak bisa jadi baris faktur
+    if (l.qty == null || l.price == null || l.total == null) {
+      const why = (l.issues ?? []).join("; ") || "Qty, Harga, atau Jumlah tidak terbaca";
+      check("error", `${lineLabel(l)} tidak terbaca lengkap (${why}). Kalau ini bukan barang, hapus baris ini.`, { lines: l.no - 1 });
+    } else {
+      for (const issue of l.issues ?? []) check("warn", `${lineLabel(l)}: ${issue}`, { lines: l.no - 1 });
+    }
+  }
 
   // 1. Invoice dari penjual yang benar dan lengkap
   if (s.sellerName && invoice.seller && nameKey(invoice.seller) !== nameKey(s.sellerName)) {
@@ -153,7 +168,7 @@ export function computeFaktur(invoice, data, settings = {}) {
   const linesMatchSubTotal = linesTotal === toSen(sum.subTotal);
   if (invoice.summary && lines.length) {
     const diffSen = linesTotal - toSen(sum.subTotal);
-    if (!diffSen) check("ok", `Jumlah ${lines.length} baris barang sama dengan Sub Total`);
+    if (!diffSen) check("ok", `Jumlah ${lines.filter((l) => l.total != null).length} baris barang sama dengan Sub Total`);
     else if (Math.abs(diffSen) <= roundingSen) {
       check("info", `Jumlah semua baris (${rupiah(linesTotal)}) selisih ${rupiah(Math.abs(diffSen))} dari Sub Total (${rupiah(toSen(sum.subTotal))}) karena pembulatan di invoice. Invoice tidak perlu diedit.`);
     } else {
@@ -237,8 +252,11 @@ export function computeFaktur(invoice, data, settings = {}) {
     const key = nameKey(l.name);
     const item = data.items?.[key] ?? {};
     return {
+      no: l.no, // nomor baris di invoice, tetap walau ada baris yang dihapus
       key,
       name: l.name,
+      issues: l.issues ?? [],
+      incomplete: l.qty == null || l.price == null || l.total == null,
       invoiceUnit: l.unit,
       qty,
       priceSen,
@@ -254,7 +272,7 @@ export function computeFaktur(invoice, data, settings = {}) {
     check("info", `Harga dihitung dari harga termasuk PPN, seperti di template Excel (mis. ${rupiah(rebuilt.unitInclusive * 100)} ÷ 1,11 = ${rupiah(rebuilt.priceSen)})`);
   }
   if (mode !== "inclusive" && hasDiscount) {
-    const discounts = fakturLines.map((l, i) => [i + 1, l.discountSen]).filter(([, d]) => d);
+    const discounts = fakturLines.map((l) => [l.no, l.discountSen]).filter(([, d]) => d);
     const totalDiscount = discounts.reduce((a, [, d]) => a + d, 0);
     const where = discounts.length === 1 ? `baris ${discounts[0][0]}` : `${discounts.length} baris`;
     if (invoiceDiscount) {
@@ -296,7 +314,7 @@ export function computeFaktur(invoice, data, settings = {}) {
     if (adjustSen && Math.abs(adjustSen) <= roundingSen) {
       const at = fakturLines.reduce((best, l, i) => (l.taxBaseSen > fakturLines[best].taxBaseSen ? i : best), 0);
       const adjusted = fakturLines.map((l, i) => (i === at ? { ...l, ...amounts(l.taxBaseSen + adjustSen, 1, s) } : l));
-      variants.push(variant("subtotal", "DPP pas dengan Sub Total", adjusted, { adjustSen, adjustLine: at + 1 }));
+      variants.push(variant("subtotal", "DPP pas dengan Sub Total", adjusted, { adjustSen, adjustLine: fakturLines[at].no }));
     }
   }
   const chosen =
@@ -329,8 +347,10 @@ export function computeFaktur(invoice, data, settings = {}) {
   const buyer = npwp && !/^0+$/.test(npwp) && nitku ? { npwp, nitku } : null;
   if (!rawNpwp) check("error", "NPWP pembeli tidak ada di invoice. Isi manual.", { header: "npwp" });
   else if (!buyer) check("error", `NPWP pembeli di invoice tidak valid ("${rawNpwp}"). Isi manual.`, { header: "npwp" });
-  const noCode = fakturLines.filter((l) => !/^\d{6}$/.test(l.code)).length;
-  const noUnit = fakturLines.filter((l) => !/^UM\.\d{4}$/.test(l.unit)).length;
+  // Baris yang tidak terbaca lengkap sudah ditahan di atas; kode dan satuannya tidak perlu diminta.
+  const readable = fakturLines.filter((l) => !l.incomplete);
+  const noCode = readable.filter((l) => !/^\d{6}$/.test(l.code)).length;
+  const noUnit = readable.filter((l) => !/^UM\.\d{4}$/.test(l.unit)).length;
   if (noCode) check("error", `Kode barang Coretax belum diisi untuk ${noCode} baris`);
   if (noUnit) check("error", `Satuan Coretax belum diisi untuk ${noUnit} baris`);
 
@@ -348,6 +368,7 @@ export function computeFaktur(invoice, data, settings = {}) {
     options: showOptions ? variants.map(({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine }) => ({ key, label, totals: t, compared: c, matches, adjustSen, adjustLine })) : [],
     checks,
     flags: { lines: [...flags.lines], summary: [...flags.summary], header: [...flags.header] },
+    removed: invoice.lines.filter((l) => removed.has(l.no)).map((l) => l.no), // nomor baris invoice yang dihapus
     ready: !checks.some((c) => c.level === "error"),
   };
 }
